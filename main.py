@@ -15,18 +15,32 @@ matplotlib.use('Agg')
 from loss import *
 from dataset import LLRGBD_real, LLRGBD_synthetic
 from PIL import Image
-import utils
+from utils import utils
 
 import models
 import argparse
 import sys
 import time
 
+from model.fogpassfilter import FogPassFilter_conv1, FogPassFilter_res1
+from pytorch_metric_learning import losses
+from pytorch_metric_learning.distances import CosineSimilarity
+from pytorch_metric_learning.reducers import MeanReducer
+
+from torch.autograd import Variable
+
 from torchvision import utils as vutils
 
 np.set_printoptions(threshold=sys.maxsize)
 torch.set_printoptions(profile='full')
 # torch.backends.cudnn.benchmark = True
+
+
+def gram_matrix(tensor):
+    d, h, w = tensor.size()
+    tensor = tensor.view(d, h*w)
+    gram = torch.mm(tensor, tensor.t())
+    return gram
 
 
 def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, best_pred=0.0):
@@ -39,12 +53,29 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
     loss_decomp = LossRetinex()
 
+    lr_fpf1 = 1e-3
+    lr_fpf2 = 1e-3
+    FogPassFilter1 = FogPassFilter_conv1(528)
+    FogPassFilter1_optimizer = torch.optim.Adamax([p for p in FogPassFilter1.parameters() if p.requires_grad == True],
+                                                  lr=lr_fpf1)
+    FogPassFilter1.cuda()
+    FogPassFilter2 = FogPassFilter_res1(2080)
+    FogPassFilter2_optimizer = torch.optim.Adamax([p for p in FogPassFilter2.parameters() if p.requires_grad == True],
+                                                  lr=lr_fpf2)
+    FogPassFilter2.cuda()
+
+    fogpassfilter_loss = losses.ContrastiveLoss(
+        pos_margin=0.1,
+        neg_margin=0.1,
+        distance=CosineSimilarity(),
+        reducer=MeanReducer()
+    )
+
     for epoch in range(args.start_epoch, args.num_epochs):
-        lr = utils.poly_lr_scheduler(opt_Decomp, 0.001, epoch, max_iter=args.num_epochs)
         lr = utils.poly_lr_scheduler(opt_Enhance, 0.001, epoch, max_iter=args.num_epochs)
         print('epoch: ', epoch, ' lr: ', lr, 'best: ', best_pred)
         loss_record = []
-        iou_record = []
+        miou_record = []
 
         # if epoch > 150:
         #     for p in Decomp.parameters():
@@ -53,7 +84,6 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
         #     Decomp.train()
 
         Decomp.train()
-        Enhance.train()
         tbar = tqdm(trainloader)
 
         for i, (image, image2, label, name) in enumerate(tbar):  # l lowlight highlight lable
@@ -64,9 +94,9 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
             I, R = Decomp(image)
             I2, R2 = Decomp(image2)
+
             I_3 = torch.cat((I, I, I), dim=1)
             I2_3 = torch.cat((I2, I2, I2), dim=1)
-
             recon_low = loss_decomp.recon(R, I_3, image)
             recon_high = loss_decomp.recon(R2, I2_3, image2)
             recon_low_2 = loss_decomp.recon(R2, I_3, image)
@@ -88,15 +118,138 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 loss1.backward()
                 opt_Decomp.step()
 
-            # l#I R拼接 作为输入
-            R_hat, smap = Enhance(torch.cat((I.detach(), R.detach()), dim=1))   # out_r, out_s
+            # train fog-pass filtering module
+            # freeze the parameters of segmentation network
+            # -----------------------------------------------------------
+            Enhance.eval()
+            for param in Enhance.parameters():
+                param.requires_grad = False
+            for param in FogPassFilter1.parameters():
+                param.requires_grad = True
+            for param in FogPassFilter2.parameters():
+                param.requires_grad = True
 
+            input2 = Variable(torch.cat((I.detach(), R.detach()), dim=1)).cuda()
+            R_hat, smap, feature_low1, feature_low2 = Enhance(input2)
+            _, _, feature_high1, feature_high2 = Enhance(torch.cat((I2.detach(), R2.detach()), dim=1))
+            fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
+            low_features = {'layer0': feature_low1, 'layer1': feature_low2}
+            high_features = {'layer0': feature_high1, 'layer1': feature_high2}
+            total_fpf_loss = 0
+
+            for idx, layer in enumerate(fsm_weights):
+                low_feature = low_features[layer]
+                high_feature = high_features[layer]
+                if idx == 0:
+                    fogpassfilter = FogPassFilter1
+                    fogpassfilter_optimizer = FogPassFilter1_optimizer
+                elif idx == 1:
+                    fogpassfilter = FogPassFilter2
+                    fogpassfilter_optimizer = FogPassFilter2_optimizer
+
+                fogpassfilter.train()
+                fogpassfilter_optimizer.zero_grad()
+
+                low_gram = [0]*args.batch_size
+                high_gram = [0]*args.batch_size
+                vector_low_gram = [0] * args.batch_size
+                vector_high_gram = [0] * args.batch_size
+                fog_factor_low = [0] * args.batch_size
+                fog_factor_high = [0] * args.batch_size
+
+                for batch_idx in range(args.batch_size):
+                    low_gram[batch_idx] = gram_matrix(low_feature[batch_idx])
+                    high_gram[batch_idx] = gram_matrix(high_feature[batch_idx])
+                    # print(low_gram[batch_idx].shape)
+
+                    vector_low_gram[batch_idx] = Variable(low_gram[batch_idx][torch.triu(
+                        torch.ones(low_gram[batch_idx].size()[0], low_gram[batch_idx].size()[1])) == 1],
+                                                         requires_grad=True)
+                    vector_high_gram[batch_idx] = Variable(high_gram[batch_idx][torch.triu(
+                        torch.ones(high_gram[batch_idx].size()[0], high_gram[batch_idx].size()[1])) == 1],
+                                                         requires_grad=True)
+                    # print(vector_low_gram[batch_idx].shape)
+
+                    fog_factor_low[batch_idx] = fogpassfilter(vector_low_gram[batch_idx])
+                    fog_factor_high[batch_idx] = fogpassfilter(vector_high_gram[batch_idx])
+
+                fog_factor_embeddings = torch.cat((torch.unsqueeze(fog_factor_low[0], 0),
+                                                   torch.unsqueeze(fog_factor_high[0], 0),
+                                                   torch.unsqueeze(fog_factor_low[1], 0),
+                                                   torch.unsqueeze(fog_factor_high[1], 0)), 0)
+                # print(fog_factor_embeddings.shape)
+
+                fog_factor_embeddings_norm = torch.norm(fog_factor_embeddings, p=2, dim=1).detach()
+                size_fog_factor = fog_factor_embeddings.size()
+                fog_factor_embeddings = fog_factor_embeddings.div(
+                    fog_factor_embeddings_norm.expand(size_fog_factor[1], 4).t())
+                fog_factor_labels = torch.LongTensor([0, 1, 0, 1])
+                fog_pass_filter_loss = fogpassfilter_loss(fog_factor_embeddings, fog_factor_labels)
+
+                total_fpf_loss += fog_pass_filter_loss
+            total_fpf_loss.backward(retain_graph=False)
+            # ----------------------------------------------------------
+
+            # train segmentation network
+            # freeze the parameters of fog pass filtering modules
+            # l#I R拼接 作为输入
+            Enhance.train()
+            loss_fsm = 0
+            for param in Enhance.parameters():
+                param.requires_grad = True
+            for param in FogPassFilter1.parameters():
+                param.requires_grad = False
+            for param in FogPassFilter2.parameters():
+                param.requires_grad = False
+
+            R_hat, smap, feature_low1, feature_low2 = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
+            _, _, feature_high1, feature_high2 = Enhance(torch.cat((I2.detach(), R2.detach()), dim=1))
+            fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
+            low_features = {'layer0': feature_low1, 'layer1': feature_low2}
+            high_features = {'layer0': feature_high1, 'layer1': feature_high2}
+
+            for idx, layer in enumerate(fsm_weights):
+                low_feature = low_features[layer]
+                high_feature = high_features[layer]
+                layer_fsm_loss = 0
+
+                na, da, ha, wa = low_feature.size()
+                nb, db, hb, wb = high_feature.size()
+
+                if idx == 0:
+                    fogpassfilter = FogPassFilter1
+                    fogpassfilter_optimizer = FogPassFilter1_optimizer
+                elif idx == 1:
+                    fogpassfilter = FogPassFilter2
+                    fogpassfilter_optimizer = FogPassFilter2_optimizer
+                fogpassfilter.eval()
+
+                for batch_idx in range(args.batch_size):
+                    low_gram = gram_matrix(low_feature[batch_idx])
+                    high_gram = gram_matrix(high_feature[batch_idx])
+
+                    low_gram = low_gram * (hb * wb) / (ha * wa)  #
+
+                    vector_low_gram = low_gram[torch.triu(
+                        torch.ones(low_gram.size()[0], low_gram.size()[1])).requires_grad_() == 1].requires_grad_()
+                    vector_high_gram = high_gram[torch.triu(
+                        torch.ones(high_gram.size()[0], high_gram.size()[1])).requires_grad_() == 1].requires_grad_()
+                    fog_factor_a = fogpassfilter(vector_low_gram)
+                    fog_factor_b = fogpassfilter(vector_high_gram)
+                    half = int(fog_factor_b.shape[0] / 2)
+
+                    layer_fsm_loss += fsm_weights[layer] * torch.mean(
+                        (fog_factor_b / (hb * wb) - fog_factor_a / (ha * wa)) ** 2) / half / high_gram.size(0)
+
+                loss_fsm += layer_fsm_loss / 2.  # batch
+
+            # -----------------------------------------------
             recon_r = torch.mean(torch.pow((R_hat - R2.detach()), 2))
             ssim_r = pt_ssim_loss(R_hat, R2.detach())
             grad_r = pt_grad_loss(R_hat, R2.detach())
 
             loss_r = recon_r + ssim_r + grad_r
-            loss_s = ce_loss(smap, label)
+            loss_s = ce_loss(smap, label) + args.lambda_fsm*loss_fsm
             loss = loss_r + loss_s
 
             opt_Enhance.zero_grad()
@@ -104,21 +257,24 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             opt_Enhance.step()
             step += 1
 
+            FogPassFilter1_optimizer.step()
+            FogPassFilter2_optimizer.step()
+
 
             smap_oh = utils.reverse_one_hot(smap)
-            _, _, iou, _, iu = utils.label_accuracy_score(label.data.cpu().numpy(), smap_oh.data.cpu().numpy(),
+            acc, acc_cls, _, _, iou = utils.label_accuracy_score(label.data.cpu().numpy(), smap_oh.data.cpu().numpy(),
                                                     args.num_classes)  # ll miou iou
-
-            iou_record.append(np.nanmean(iu))
+            miou = np.sum(np.nanmean(iou[1:]))
+            # macc = np.sum(np.nanmean(acc_cls[1:]))
 
             train_loss += loss1.item() + loss.item()
 
-            writer.add_scalar('loss_step', train_loss, step)
+            writer.add_scalar('loss_decomp_joint', train_loss, step)
             loss_record.append(train_loss)
 
             # tbar.set_description('TrainLoss: {0:.3} mIoU: {1:.3} S: {2:.3}'.format(
-            tbar.set_description('TrainLoss: {0:.3} mIoU: {1:.3} loss_r: {2:.3}'.format(
-                np.mean(loss_record), np.nanmean(iou_record), loss_r))
+            tbar.set_description('TrainLoss: {0:.3},mIoU: {1:.3} loss_seg: {2:.3}'.format(
+                np.mean(loss_record), miou, loss_s))
 
             if i % 600 == 0:
                 I_pow = torch.pow(I_3, 0.1)
@@ -145,27 +301,25 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 im.save(filepath[:-4] + '.jpg')
 
         tbar.close()
-        loss_train_mean = np.mean(loss_record)
-        iou_train = np.nanmean(iou_record)
+        # loss_train_mean = np.mean(loss_record)
+        # iou_train = np.nanmean(miou_record)
 
-        writer.add_scalar('iou_train', iou_train, epoch)
-        writer.add_scalar('loss_epoch_train', float(loss_train_mean), epoch)
+        # writer.add_scalar('iou_train', iou_train, epoch)
+        # writer.add_scalar('loss_epoch_train', float(loss_train_mean), epoch)
 
         if epoch % args.validation_step == 0:
-            iou, loss_val, acc, pre_val, lbl_val, avgacc = val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader)
-            writer.add_scalar('iou_val', iou, epoch)
+            acc, macc, miou = val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader)
             writer.add_scalar('acc_val', acc, epoch)
-            writer.add_scalar('loss_epoch_val', loss_val, epoch)
+            writer.add_scalar('miou_val', miou, epoch)
 
             if not os.path.isdir(args.save_model_path):
                 os.makedirs(args.save_model_path)
 
             # print('iou: {}, acc: {}, best: {}, new: {}'.format(iou, acc, best_pred, (iou + acc) / 2))
-            print('iou: {}, acc: {}, macc:{} best: {}, new: {}'.format(iou, acc, avgacc, best_pred, (iou + acc) / 2))
+            print(' acc: {}, macc:{}, miou: {}, best: {}, new: {}'.format(acc, macc, miou, best_pred, (miou + acc) / 2))
 
-
-            if (iou + acc) / 2 > best_pred:  # miou + acc
-                best_pred = (iou + acc) / 2
+            if (miou + acc) / 2 > best_pred:  # miou + acc
+                best_pred = (miou + acc) / 2
                 # 保存模型
                 utils.save_checkpoint({
                     'epoch': epoch + 1,
@@ -175,16 +329,6 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                     'optimizer_enhance': opt_Enhance.state_dict(),
                     'best_pred': best_pred,
                 }, is_best=True, filename='epoch{}best.pth'.format(epoch))
-            # else:
-            #     utils.save_checkpoint({
-            #         'epoch': epoch + 1,
-            #         'state_dict_decomp': Decomp.state_dict(),
-            #         'optimizer_decomp': opt_Decomp.state_dict(),
-            #         'state_dict_enhance': Enhance.state_dict(),
-            #         'optimizer_enhance': opt_Enhance.state_dict(),
-            #         'best_pred': best_pred,
-            #     }, is_best=False, filename='{0}.pth.tar'.format(epoch))
-                # ll
             elif epoch > 0 and epoch % 20 == 0:  # 每20轮保存一次
                 utils.save_checkpoint({
                         'epoch': epoch + 1,
@@ -196,10 +340,9 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                     }, is_best=False, filename='epoch{0}.pth'.format(epoch))
 
             with open('log/log.csv', 'a') as csvfile:
-                wt = csv.DictWriter(csvfile, fieldnames=['iou', 'acc', 'avgacc', 'average'])
-
+                wt = csv.DictWriter(csvfile, fieldnames=['acc', 'macc', 'miou', 'average'])
                 wt.writeheader()
-                wt.writerow({'iou': iou, 'acc': acc, 'avgacc': avgacc, 'average': (iou+acc)/2})
+                wt.writerow({'acc': acc, 'macc': macc, 'miou': miou, 'average': (miou+acc)/2})
 
 
 def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, best_pred=0.0):
@@ -217,66 +360,65 @@ def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, 
         tbar = tqdm(valloader)
         for i, (image, image2, label, name) in enumerate(tbar):
             image = image.cuda()
-            label = label.cuda()
             image2 = image2.cuda()
+            label = label.cuda()
+
             # label_sd1 = label_sd1.cuda()
             # label_sd2 = label_sd2.cuda()
             # label_sd3 = label_sd3.cuda()
 
-            if args.multiple_GPUs:
-                # output = gather(output, 0, dim=0)
-                # output = output[0]  # ll
+            I, R = Decomp(image)
+            I2, R2 = Decomp(image2)
+            I_3 = torch.cat((I, I, I), dim=1)
+            I2_3 = torch.cat((I2, I2, I2), dim=1)
 
-                I, R = Decomp(image)
-                I2, R2 = Decomp(image2)
-                I_3 = torch.cat((I, I, I), dim=1)
-                I2_3 = torch.cat((I2, I2, I2), dim=1)
+            R_hat, smap, _, _ = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
 
-                R_hat, smap = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
+            # recon1 = loss_decomp.recon(R, I, image)
+            # smooth_i = illumination_smooth_loss(R, I)
+            # max_i = loss_decomp.max_rgb_loss(image, I)
+            # loss1 = recon1 + 0.05*smooth_i + 0.02*max_i
+            # loss_s = ce_loss(smap, label)
+            #
+            # loss = loss1 + loss_s
+            # loss_record.append(loss.item())
 
-                recon1 = loss_decomp.recon(R, I, image)
-                smooth_i = illumination_smooth_loss(R, I)
-                max_i = loss_decomp.max_rgb_loss(image, I)
-                loss1 = recon1 + 0.05*smooth_i +0.02 * max_i
-                loss_s = ce_loss(smap, label)
+            smap_oh = utils.reverse_one_hot(smap)
 
-                loss = loss1 + loss_s
-                loss_record.append(loss.item())
+            for l, p in zip(label.data.cpu().numpy(), smap_oh.data.cpu().numpy()):
+                lbls.append(l)
+                preds.append(p)
 
-                smap_oh = utils.reverse_one_hot(smap)
+            if i % 5 == 0:
+                I_pow = torch.pow(I_3, 0.1)
+                I_e = I_pow * R_hat
+                sout = utils.reverse_one_hot(smap)
+                sout = sout[0, :, :]
+                sout = utils.colorize(sout).numpy()
 
-                for l, p in zip(label.data.cpu().numpy(), smap_oh.data.cpu().numpy()):
-                    lbls.append(l)
-                    preds.append(p)
+                sout = np.transpose(sout, (2, 0, 1))
 
-                if i % 5 == 0:
-                    I_pow = torch.pow(I_3, 0.1)
-                    I_e = I_pow * R_hat
-                    sout = utils.reverse_one_hot(smap)
-                    sout = sout[0, :, :]
-                    sout = utils.colorize(sout).numpy()
+                lbl = label[0, :, :]
+                lbl = utils.colorize(lbl).numpy()
+                lbl = np.transpose(lbl, (2, 0, 1))
+                cat_image = np.concatenate([image[0, :, :, :].detach().cpu(), R[0, :, :, :].detach().cpu(),
+                                            I_3[0, :, :, :].detach().cpu(), R2[0, :, :, :].detach().cpu(),
+                                            I2_3[0, :, :, :].detach().cpu(),
+                                            R_hat[0, :, :, :].detach().cpu(),
+                                            I_e[0, :, :, :].detach().cpu(), lbl, sout], axis=2)
+                cat_image = np.transpose(cat_image, (1, 2, 0))
+                cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
 
-                    sout = np.transpose(sout, (2, 0, 1))
+                im = Image.fromarray(cat_image)  # 低光，I,R,I_3,R2,I2_3 R_hat,I_e I*R,lbl, sout
+                # 低光 R, I, R2, I2, 恢复R, 恢复低光，label, 分割结果
+                # filepath = os.path.join('/path/to/save/folder', 'val_%d.png' % i)
+                filepath = os.path.join('cat_image', 'val_%d.png' % i)
+                im.save(filepath[:-4] + '.jpg')
 
-                    lbl = label[0, :, :]
-                    lbl = utils.colorize(lbl).numpy()
-                    lbl = np.transpose(lbl, (2, 0, 1))
-                    cat_image = np.concatenate([image[0, :, :, :].detach().cpu(), R[0, :, :, :].detach().cpu(),
-                                                I_3[0, :, :, :].detach().cpu(), R2[0, :, :, :].detach().cpu(),
-                                                I2_3[0, :, :, :].detach().cpu(),
-                                                R_hat[0, :, :, :].detach().cpu(),
-                                                I_e[0, :, :, :].detach().cpu(), lbl, sout], axis=2)
-                    cat_image = np.transpose(cat_image, (1, 2, 0))
-                    cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
-
-                    im = Image.fromarray(cat_image)
-                    # filepath = os.path.join('/path/to/save/folder', 'val_%d.png' % i)
-                    filepath = os.path.join('cat_image', 'val_%d.png' % i)
-                    im.save(filepath[:-4] + '.jpg')
-
-        acc, acc_cls, iou, _, iu = utils.label_accuracy_score(lbls, preds, args.num_classes)
-
-    return np.sum(np.nanmean(iu[1:])), np.mean(loss_record), acc, smap_oh, label, np.sum(np.nanmean(acc_cls[1:]))
+        acc, acc_cls, _, _, iou = utils.label_accuracy_score(lbls, preds, args.num_classes)
+        miou = np.sum(np.nanmean(iou[1:]))
+        macc = np.sum(np.nanmean(acc_cls[1:]))
+    return acc, macc, miou
 
 
 def output(args, Net, Net2, valloader):
@@ -353,7 +495,7 @@ def evaluation(args, Net, Net2, valloader):
 
             else:
                 I, R = Net(image)   # [1, 1, 240, 320]  [1, 3, 240, 320]
-                R_hat, smap = Net2(torch.cat((I.detach(), R.detach()), dim=1))  # smap [1, 14, 240, 320] 14-class
+                R_hat, smap, _, _ = Net2(torch.cat((I.detach(), R.detach()), dim=1))  # smap [1, 14, 240, 320] 14-class
 
                 # vutils.save_image(I, 'ilu.png')
                 # vutils.save_image(R, 'ref.png')
@@ -391,44 +533,32 @@ def evaluation(args, Net, Net2, valloader):
 def main(argv):
     # basic parameters
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--mode', type=str, default='train_and_val', help='train_and_val|output|evaluation')
-    parser.add_argument('--num_epochs', type=int, default=200, help='Number of epochs to train for')
-    # parser.add_argument('--data_path', type=str, default='/path/to/your/dataset/', help='path to your dataset')
-    # parser.add_argument('--start_epoch', type=int, default=0, help='Start counting epochs from this number')
+    parser.add_argument('--num_epochs', type=int, default=300, help='Number of epochs to train for')
     parser.add_argument('--checkpoint_step', type=int, default=5, help='How often to save checkpoints (epochs)')
     parser.add_argument('--validation_step', type=int, default=1, help='How often to perform validation (epochs)')
     parser.add_argument('--crop_height', type=int, default=576, help='Height of cropped/resized input image to network')
     parser.add_argument('--crop_width', type=int, default=768, help='Width of cropped/resized input image to network')
-    # parser.add_argument('--batch_size', type=int, default=4, help='Number of images in each batch')
-    parser.add_argument('--batch_size', type=int, default=1, help='Number of images in each batch')
+    parser.add_argument('--batch_size', type=int, default=2, help='Number of images in each batch')
     parser.add_argument('--learning_rate', type=float, default=0.01, help='learning rate used for train')
     parser.add_argument('--print_freq', type=int, default=600, help='print freq')
-    # parser.add_argument('--num_workers', type=int, default=16, help='num of workers')
     parser.add_argument('--num_classes', type=int, default=14, help='num of object classes (with void)')
-    # parser.add_argument('--cuda', type=str, default='0', help='GPU id used for training')
     parser.add_argument('--seed', type=int, default=1, help='random seed')
     parser.add_argument('--use_gpu', type=bool, default=True, help='whether to user gpu for training')
     # parser.add_argument('--pretrained_model_path', type=str, default='/path/to/LISU_LLRGBD_real_best.pth.tar', help='saved model')
     # parser.add_argument('--save_model_path', type=str, default='./checkpoints', help='path to save trained model')
-    # parser.add_argument('--multiple-GPUs', default=False, help='train with multiple GPUs')
 
     #  ll
-    parser.add_argument('--data_path', type=str, default=r'/home/LJL/public_dataset/LISU/LISU_LLRGBD_real', help='path to your dataset')
-    # parser.add_argument('--pretrained_model_path', type=str, default=r'ckpt/LISU_LLRGBD_real_best.pth.tar', help='saved model')
-    # parser.add_argument('--pretrained_model_path', type=str, default=None, help='saved model')
-    parser.add_argument('--pretrained_model_path', type=str, default='ckptbest.pth.tar', help='saved model')
-    parser.add_argument('--mode', type=str, default='evaluation', help='train_and_val|output|evaluation')
+    parser.add_argument('--data_path', type=str, default=r'/mnt/disk2/data/stu010/lj/dataset/LISU/LISU_LLRGBD_real', help='path to your dataset')
+    # parser.add_argument('--pretrained_model_path', type=str, default=r'ckpt/epoch177_pre_best.pth', help='saved model')
+    parser.add_argument('--pretrained_model_path', type=str, default=None, help='saved model')
+    parser.add_argument('--mode', type=str, default='train_and_val', help='train_and_val|output|evaluation')
     parser.add_argument('--cuda', type=str, default='1', help='GPU id used for training')
     parser.add_argument('--save_model_path', type=str, default='ckpt', help='path to save trained model')
     parser.add_argument('--num_workers', type=int, default=2, help='num of workers')
-    # parser.add_argument('--multiple-GPUs', default=True, help='train with multiple GPUs')
-    parser.add_argument('--multiple-GPUs', default=False, help='train with multiple GPUs')
+    # parser.add_argument('--multiple-GPUs', default=True, help='val使用')
+    parser.add_argument('--multiple-GPUs', default=False, help='')
     parser.add_argument('--start_epoch', type=int, default=0, help='Start counting epochs from this number')
-
-
-
-
-
+    parser.add_argument('--lambda_fsm', type=int, default=0.0000001, help='')
 
     args = parser.parse_args(argv)
 
@@ -463,10 +593,10 @@ def main(argv):
         best_pred = checkpoint['best_pred']
     else:
         # best_pred = 0.0
-        best_pred = 0.3
+        best_pred = 0.57565
 
     trainset = LLRGBD_real(args, mode='train')
-    trainloader = DataLoader(trainset, batch_size=4, shuffle=False, num_workers=0, drop_last=True)
+    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
     valset = LLRGBD_real(args, mode='val')
     valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
 

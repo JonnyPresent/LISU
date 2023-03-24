@@ -111,14 +111,14 @@ class LISU_JOINT(nn.Module):
             nn.Conv2d(512, 256, 3, 1, 1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
         self.deconv3_r = nn.Sequential(
             nn.Conv2d(768, 128, 3, 1, 1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
 
@@ -126,41 +126,41 @@ class LISU_JOINT(nn.Module):
             nn.Conv2d(384, 64, 3, 1, 1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
         self.deconv1_r = nn.Sequential(
             nn.Conv2d(192, 32, 3, 1, 1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'), )
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True), )
 
         self.deconv4_s = nn.Sequential(
             nn.Conv2d(512, 256, 3, 1, 1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
         self.deconv3_s = nn.Sequential(
             nn.Conv2d(768, 128, 3, 1, 1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
         self.deconv2_s = nn.Sequential(
             nn.Conv2d(384, 64, 3, 1, 1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
 
         self.deconv1_s = nn.Sequential(
             nn.Conv2d(192, 32, 3, 1, 1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Upsample(scale_factor=2, mode='bilinear'), )
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True), )
 
         self.out_r = nn.Sequential(
             nn.Conv2d(96, 32, 3, 1, 1),
@@ -210,4 +210,4 @@ class LISU_JOINT(nn.Module):
         out_r = torch.sigmoid(self.out_r(torch.cat([x1d_r] + [x1d_s] + [x1], dim=1)))
         out_s = self.out_s(torch.cat([x1d_s] + [x1d_r] + [x1], dim=1))
 
-        return out_r, out_s
+        return out_r, out_s, x1, x2
