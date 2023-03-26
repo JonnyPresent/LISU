@@ -117,7 +117,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 opt_Decomp.zero_grad()
                 loss1.backward()
                 opt_Decomp.step()
-
+            writer.add_scalar("decom_loss", loss1, step)
             # train fog-pass filtering module
             # freeze the parameters of segmentation network
             # -----------------------------------------------------------
@@ -131,8 +131,8 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
             input_i_r = Variable(torch.cat((I.detach(), R.detach()), dim=1)).cuda()
             input_i2_r2 = Variable(torch.cat((I2.detach(), R2.detach()), dim=1)).cuda()
-            R_hat, smap, feature_low1, feature_low2 = Enhance(input_i_r)
-            r_hat_n, smap_n, feature_high1, feature_high2 = Enhance(input_i2_r2)
+            smap, feature_low1, feature_low2 = Enhance(input_i_r)
+            smap_n, feature_high1, feature_high2 = Enhance(input_i2_r2)
             fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
             low_features = {'layer0': feature_low1, 'layer1': feature_low2}
             high_features = {'layer0': feature_high1, 'layer1': feature_high2}
@@ -239,13 +239,8 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 loss_fsm += layer_fsm_loss / 4.
 
             # -----------------------------------------------
-            recon_r = torch.mean(torch.pow((R_hat - R2.detach()), 2))
-            ssim_r = pt_ssim_loss(R_hat, R2.detach())
-            grad_r = pt_grad_loss(R_hat, R2.detach())
-
-            loss_r = recon_r + ssim_r + grad_r
             loss_s = ce_loss(smap_n, label) + args.lambda_fsm*loss_fsm
-            loss = loss_r + loss_s
+            loss = loss_s
 
             opt_Enhance.zero_grad()
             loss.backward()
@@ -264,36 +259,38 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
             train_loss += loss1.item() + loss.item()
 
-            writer.add_scalar('loss_decomp_joint', train_loss, step)
+            writer.add_scalar('seg_loss', loss, step)
+            writer.add_scalar('train_loss', train_loss, step)
             loss_record.append(train_loss)
 
             # tbar.set_description('TrainLoss: {0:.3} mIoU: {1:.3} S: {2:.3}'.format(
-            tbar.set_description('TrainLoss: {0:.3},mIoU: {1:.3} loss_seg: {2:.3}'.format(
-                np.mean(loss_record), miou, loss_s))
+            tbar.set_description('TrainLoss: {0:.3},mIoU: {1:.3}, seg_loss: {2:.3}, decom_loss:{3:.3}'.format(
+                np.mean(loss_record), miou, loss_s, loss1))
 
-            if i % 600 == 0:
-                I_pow = torch.pow(I_3, 0.1)
-                I_e = I_pow * R_hat
-                sout = utils.reverse_one_hot(smap)
-                sout = sout[0, :, :]
-                sout = utils.colorize(sout).numpy()
-                sout = np.transpose(sout, (2, 0, 1))
-
-                lbl = label[0, :, :]
-                lbl = utils.colorize(lbl).numpy()
-                lbl = np.transpose(lbl, (2, 0, 1))
-                cat_image = np.concatenate(
-                    [image[0, :, :, :].detach().cpu(), R[0, :, :, :].detach().cpu(), I_3[0, :, :, :].detach().cpu(),
-                     R2[0, :, :, :].detach().cpu(), I2_3[0, :, :, :].detach().cpu(), R_hat[0, :, :, :].detach().cpu(),
-                     I_e[0, :, :, :].detach().cpu(), lbl, sout], axis=2)
-                cat_image = np.transpose(cat_image, (1, 2, 0))
-                cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
-
-                im = Image.fromarray(cat_image)
-                # filepath = os.path.join('/path/to/folder', 'train_%d_%d.png' %(epoch, i))
-                filepath = os.path.join('cat_image/', 'train_%d_%d.png' % (epoch, i))
-
-                im.save(filepath[:-4] + '.jpg')
+            # if i % 600 == 0:
+            #     I_pow = torch.pow(I_3, 0.1)
+            #     # I_e = I_pow * R_hat
+            #     I_e = I_pow
+            #     sout = utils.reverse_one_hot(smap)
+            #     sout = sout[0, :, :]
+            #     sout = utils.colorize(sout).numpy()
+            #     sout = np.transpose(sout, (2, 0, 1))
+            #
+            #     lbl = label[0, :, :]
+            #     lbl = utils.colorize(lbl).numpy()
+            #     lbl = np.transpose(lbl, (2, 0, 1))
+            #     cat_image = np.concatenate(
+            #         [image[0, :, :, :].detach().cpu(), R[0, :, :, :].detach().cpu(), I_3[0, :, :, :].detach().cpu(),
+            #          R2[0, :, :, :].detach().cpu(), I2_3[0, :, :, :].detach().cpu(), R_hat[0, :, :, :].detach().cpu(),
+            #          I_e[0, :, :, :].detach().cpu(), lbl, sout], axis=2)
+            #     cat_image = np.transpose(cat_image, (1, 2, 0))
+            #     cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
+            #
+            #     im = Image.fromarray(cat_image)
+            #     # filepath = os.path.join('/path/to/folder', 'train_%d_%d.png' %(epoch, i))
+            #     filepath = os.path.join('cat_image/', 'train_%d_%d.png' % (epoch, i))
+            #
+            #     im.save(filepath[:-4] + '.jpg')
 
         tbar.close()
         # loss_train_mean = np.mean(loss_record)
@@ -311,10 +308,10 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 os.makedirs(args.save_model_path)
 
             # print('iou: {}, acc: {}, best: {}, new: {}'.format(iou, acc, best_pred, (iou + acc) / 2))
-            print(' acc: {}, macc:{}, miou: {}, best: {}, new: {}'.format(acc, macc, miou, best_pred, (miou + acc) / 2))
+            print(' acc: {}, macc:{}, miou: {}, best: {}'.format(acc, macc, miou, best_pred))
 
-            if (miou + acc) / 2 > best_pred:  # miou + acc
-                best_pred = (miou + acc) / 2
+            if miou > best_pred:  # miou + acc
+                best_pred = miou
                 # 保存模型
                 utils.save_checkpoint({
                     'epoch': epoch + 1,
@@ -322,8 +319,8 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                     'optimizer_decomp': opt_Decomp.state_dict(),
                     'state_dict_enhance': Enhance.state_dict(),
                     'optimizer_enhance': opt_Enhance.state_dict(),
-                    'best_pred': best_pred,
-                }, is_best=True, filename='epoch{}best.pth'.format(epoch))
+                    'best_pred': miou,
+                }, is_best=True, filename='epoch{}best{}.pth'.format(epoch, best_pred))
             elif epoch > 0 and epoch % 20 == 0:  # 每20轮保存一次
                 utils.save_checkpoint({
                         'epoch': epoch + 1,
@@ -331,13 +328,8 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                         'optimizer_decomp': opt_Decomp.state_dict(),
                         'state_dict_enhance': Enhance.state_dict(),
                         'optimizer_enhance': opt_Enhance.state_dict(),
-                        'best_pred': best_pred,
+                        'best_pred': miou,
                     }, is_best=False, filename='epoch{0}.pth'.format(epoch))
-
-            with open('log/log.csv', 'a') as csvfile:
-                wt = csv.DictWriter(csvfile, fieldnames=['acc', 'macc', 'miou', 'average'])
-                wt.writeheader()
-                wt.writerow({'acc': acc, 'macc': macc, 'miou': miou, 'average': (miou+acc)/2})
 
 
 def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, best_pred=0.0):
@@ -367,7 +359,7 @@ def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, 
             I_3 = torch.cat((I, I, I), dim=1)
             I2_3 = torch.cat((I2, I2, I2), dim=1)
 
-            R_hat, smap, _, _ = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
+            smap, _, _ = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
 
             # recon1 = loss_decomp.recon(R, I, image)
             # smooth_i = illumination_smooth_loss(R, I)
@@ -386,7 +378,8 @@ def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, 
 
             if i % 5 == 0:
                 I_pow = torch.pow(I_3, 0.1)
-                I_e = I_pow * R_hat
+                # I_e = I_pow * R_hat
+                I_e = I_pow
                 sout = utils.reverse_one_hot(smap)
                 sout = sout[0, :, :]
                 sout = utils.colorize(sout).numpy()
@@ -396,10 +389,10 @@ def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, 
                 lbl = label[0, :, :]
                 lbl = utils.colorize(lbl).numpy()
                 lbl = np.transpose(lbl, (2, 0, 1))
+                # 低光 R, I, R2, I2, -, I_e, label, 分割结果
                 cat_image = np.concatenate([image[0, :, :, :].detach().cpu(), R[0, :, :, :].detach().cpu(),
                                             I_3[0, :, :, :].detach().cpu(), R2[0, :, :, :].detach().cpu(),
                                             I2_3[0, :, :, :].detach().cpu(),
-                                            R_hat[0, :, :, :].detach().cpu(),
                                             I_e[0, :, :, :].detach().cpu(), lbl, sout], axis=2)
                 cat_image = np.transpose(cat_image, (1, 2, 0))
                 cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
@@ -559,14 +552,15 @@ def main(argv):
 
     # gpu id
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
+    print(f"CUDA_VISIBLE_DEVICES:{args.cuda}")
 
     import torch
     from torch.utils.data import DataLoader
 
     # random seed
-    np.random.seed(args.seed)  # cpu vars
-    torch.manual_seed(args.seed)  # cpu  vars
-    torch.cuda.manual_seed_all(args.seed)
+    # np.random.seed(args.seed)  # cpu vars
+    # torch.manual_seed(args.seed)  # cpu  vars
+    # torch.cuda.manual_seed_all(args.seed)
 
     Net = models.LISU_DECOMP().cuda()
     Net2 = models.LISU_JOINT().cuda()
@@ -590,7 +584,7 @@ def main(argv):
         # best_pred = 0.0
         # best_pred = 0.57565
         print('未加载lisu-pre')
-        best_pred = 0.3
+        best_pred = 0.1
 
     trainset = LLRGBD_real(args, mode='train')
     trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
