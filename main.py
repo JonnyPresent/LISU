@@ -129,9 +129,10 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             for param in FogPassFilter2.parameters():
                 param.requires_grad = True
 
-            input2 = Variable(torch.cat((I.detach(), R.detach()), dim=1)).cuda()
-            R_hat, smap, feature_low1, feature_low2 = Enhance(input2)
-            _, _, feature_high1, feature_high2 = Enhance(torch.cat((I2.detach(), R2.detach()), dim=1))
+            input_i_r = Variable(torch.cat((I.detach(), R.detach()), dim=1)).cuda()
+            input_i2_r2 = Variable(torch.cat((I2.detach(), R2.detach()), dim=1)).cuda()
+            R_hat, smap, feature_low1, feature_low2 = Enhance(input_i_r)
+            r_hat_n, smap_n, feature_high1, feature_high2 = Enhance(input_i2_r2)
             fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
             low_features = {'layer0': feature_low1, 'layer1': feature_low2}
             high_features = {'layer0': feature_high1, 'layer1': feature_high2}
@@ -202,12 +203,6 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             for param in FogPassFilter2.parameters():
                 param.requires_grad = False
 
-            R_hat, smap, feature_low1, feature_low2 = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
-            _, _, feature_high1, feature_high2 = Enhance(torch.cat((I2.detach(), R2.detach()), dim=1))
-            fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
-            low_features = {'layer0': feature_low1, 'layer1': feature_low2}
-            high_features = {'layer0': feature_high1, 'layer1': feature_high2}
-
             for idx, layer in enumerate(fsm_weights):
                 low_feature = low_features[layer]
                 high_feature = high_features[layer]
@@ -228,7 +223,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                     low_gram = gram_matrix(low_feature[batch_idx])
                     high_gram = gram_matrix(high_feature[batch_idx])
 
-                    low_gram = low_gram * (hb * wb) / (ha * wa)  #
+                    # low_gram = low_gram * (hb * wb) / (ha * wa)  #
 
                     vector_low_gram = low_gram[torch.triu(
                         torch.ones(low_gram.size()[0], low_gram.size()[1])).requires_grad_() == 1].requires_grad_()
@@ -241,7 +236,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                     layer_fsm_loss += fsm_weights[layer] * torch.mean(
                         (fog_factor_b / (hb * wb) - fog_factor_a / (ha * wa)) ** 2) / half / high_gram.size(0)
 
-                loss_fsm += layer_fsm_loss / 2.  # batch
+                loss_fsm += layer_fsm_loss / 4.
 
             # -----------------------------------------------
             recon_r = torch.mean(torch.pow((R_hat - R2.detach()), 2))
@@ -249,7 +244,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             grad_r = pt_grad_loss(R_hat, R2.detach())
 
             loss_r = recon_r + ssim_r + grad_r
-            loss_s = ce_loss(smap, label) + args.lambda_fsm*loss_fsm
+            loss_s = ce_loss(smap_n, label) + args.lambda_fsm*loss_fsm
             loss = loss_r + loss_s
 
             opt_Enhance.zero_grad()
@@ -548,8 +543,8 @@ def main(argv):
     # parser.add_argument('--save_model_path', type=str, default='./checkpoints', help='path to save trained model')
 
     #  ll
-    parser.add_argument('--data_path', type=str, default=r'/mnt/disk2/data/stu010/lj/dataset/LISU/LISU_LLRGBD_real', help='path to your dataset')
-    # parser.add_argument('--pretrained_model_path', type=str, default=r'ckpt/epoch177_pre_best.pth', help='saved model')
+    parser.add_argument('--data_path', type=str, default=r'/mnt/disk2/data/stu010/lj/datasets/LISU/LISU_LLRGBD_real', help='path to your dataset')
+    # parser.add_argument('--pretrained_model_path', type=str, default=r'ckpt/epoch177_pre-fifo_real_best57.6.pth', help='saved model')
     parser.add_argument('--pretrained_model_path', type=str, default=None, help='saved model')
     parser.add_argument('--mode', type=str, default='train_and_val', help='train_and_val|output|evaluation')
     parser.add_argument('--cuda', type=str, default='1', help='GPU id used for training')
@@ -593,7 +588,9 @@ def main(argv):
         best_pred = checkpoint['best_pred']
     else:
         # best_pred = 0.0
-        best_pred = 0.57565
+        # best_pred = 0.57565
+        print('未加载lisu-pre')
+        best_pred = 0.3
 
     trainset = LLRGBD_real(args, mode='train')
     trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
