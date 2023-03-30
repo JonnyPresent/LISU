@@ -11,6 +11,8 @@ import csv
 import matplotlib
 from tensorboardX import SummaryWriter
 
+from model.refinenetlw import rf_lw101
+
 matplotlib.use('Agg')
 from loss import *
 from dataset import LLRGBD_real, LLRGBD_synthetic
@@ -29,6 +31,7 @@ from pytorch_metric_learning.reducers import MeanReducer
 
 from torch.autograd import Variable
 from torch.nn import functional as F
+from utils.optimisers import get_optimisers, get_lr_schedulers
 
 from torchvision import utils as vutils
 
@@ -38,6 +41,37 @@ torch.set_printoptions(profile='full')
 
 # torch.backends.cudnn.benchmark = True
 
+def make_list(x):
+    """Returns the given input as a list."""
+    if isinstance(x, list):
+        return x
+    elif isinstance(x, tuple):
+        return list(x)
+    else:
+        return [x]
+
+def setup_optimisers_and_schedulers(args, model):
+    optimisers = get_optimisers(
+        model=model,
+        enc_optim_type="sgd",
+        enc_lr=6e-4,
+        enc_weight_decay=1e-5,
+        enc_momentum=0.9,
+        dec_optim_type="sgd",
+        dec_lr=6e-3,
+        dec_weight_decay=1e-5,
+        dec_momentum=0.9,
+    )
+    schedulers = get_lr_schedulers(
+        enc_optim=optimisers[0],
+        dec_optim=optimisers[1],
+        enc_lr_gamma=0.5,
+        dec_lr_gamma=0.5,
+        enc_scheduler_type="multistep",
+        dec_scheduler_type="multistep",
+        epochs_per_stage=(100, 100, 100),
+    )
+    return optimisers, schedulers
 
 def gram_matrix(tensor):
     d, h, w = tensor.size()
@@ -46,12 +80,13 @@ def gram_matrix(tensor):
     return gram
 
 
-def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, best_pred=0.0):
+# def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, best_pred=0.0):
+def train_and_val(args, Decomp, opt_Decomp, model, opts, trainloader, valloader, best_pred=0.0):
     writer_name = '{}_{}'.format('LISU', str(time.strftime("%m-%d %H:%M:%S", time.localtime())))
     writer = SummaryWriter(os.path.join('runs', writer_name))
     step = 0
 
-    opt_Enhance.zero_grad()
+    # opt_Enhance.zero_grad()
     opt_Decomp.zero_grad()
 
     loss_decomp = LossRetinex()
@@ -61,11 +96,11 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
     lr_fpf1 = 1e-3
     lr_fpf2 = 1e-3
-    FogPassFilter1 = FogPassFilter_conv1(528)
+    FogPassFilter1 = FogPassFilter_conv1(2080)
     FogPassFilter1_optimizer = torch.optim.Adamax([p for p in FogPassFilter1.parameters() if p.requires_grad == True],
                                                   lr=lr_fpf1)
     FogPassFilter1.cuda()
-    FogPassFilter2 = FogPassFilter_res1(2080)
+    FogPassFilter2 = FogPassFilter_res1(32896)
     FogPassFilter2_optimizer = torch.optim.Adamax([p for p in FogPassFilter2.parameters() if p.requires_grad == True],
                                                   lr=lr_fpf2)
     FogPassFilter2.cuda()
@@ -78,8 +113,9 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
     )
 
     for epoch in range(args.start_epoch, args.num_epochs):
-        lr = utils.poly_lr_scheduler(opt_Enhance, 0.001, epoch, max_iter=args.num_epochs)
-        print('epoch:', epoch, 'best:', best_pred, ' lr_enhance:', lr, 'lr_fpf1:', lr_fpf1, 'lr_fpf2:', lr_fpf2)
+        # lr = utils.poly_lr_scheduler(opt_Enhance, 0.001, epoch, max_iter=args.num_epochs)
+        # print('epoch:', epoch, 'best:', best_pred, ' lr_enhance:', lr, 'lr_fpf1:', lr_fpf1, 'lr_fpf2:', lr_fpf2)
+        print('epoch:', epoch, 'best:', best_pred, 'lr_fpf1:', lr_fpf1, 'lr_fpf2:', lr_fpf2)
         loss_record = []
         miou_record = []
 
@@ -89,14 +125,18 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
         # else:
         #     Decomp.train()
 
+        # for opt in opts:
+        #     opt.zero_grad()
+
         Decomp.eval()
         tbar = tqdm(trainloader)
 
         for i, (image, image2, label, name) in enumerate(tbar):  # l lowlight highlight lable
             train_loss = 0.0
             image = image.cuda()
-            label = label.cuda()
             image2 = image2.cuda()
+            label = label.cuda()
+            image_size = np.array(image.shape)
 
             I, R = Decomp(image)
             I2, R2 = Decomp(image2)
@@ -128,8 +168,8 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             # train fog-pass filtering module
             # freeze the parameters of segmentation network
             # -----------------------------------------------------------
-            Enhance.eval()
-            for param in Enhance.parameters():
+            model.eval()
+            for param in model.parameters():
                 param.requires_grad = False
             for param in FogPassFilter1.parameters():
                 param.requires_grad = True
@@ -138,11 +178,12 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
 
             input_i_r = Variable(torch.cat((I.detach(), R.detach()), dim=1)).cuda()
             input_i2_r2 = Variable(torch.cat((I2.detach(), R2.detach()), dim=1)).cuda()
-            smap, feature_low1, feature_low2 = Enhance(input_i_r)
-            smap_n, feature_high1, feature_high2 = Enhance(input_i2_r2)
+            feature_sf0, feature_sf1, feature_sf2, feature_sf3, feature_sf4, feature_sf5 = model(input_i_r)
+            feature_cw0, feature_cw1, feature_cw2, feature_cw3, feature_cw4, feature_cw5 = model(input_i2_r2)
             fsm_weights = {'layer0': 0.5, 'layer1': 0.5}
-            low_features = {'layer0': feature_low1, 'layer1': feature_low2}
-            high_features = {'layer0': feature_high1, 'layer1': feature_high2}
+            low_features = {'layer0': feature_sf0, 'layer1': feature_sf1}
+            high_features = {'layer0': feature_cw0, 'layer1': feature_cw1}
+
             total_fpf_loss = 0
 
             for idx, layer in enumerate(fsm_weights):
@@ -203,18 +244,25 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             # train segmentation network
             # freeze the parameters of fog pass filtering modules
             # l#I R拼接 作为输入
-            Enhance.train()
-            loss_fsm = 0
-            outfeature_l_logsoftmax = log_m(smap)
-            outfeature_h_softmax = m(smap_n)
-            loss_con = kl_loss(outfeature_l_logsoftmax, outfeature_h_softmax)
+            model.train()
+            interp = torch.nn.Upsample(size=(image_size[2], image_size[3]), mode='bilinear', align_corners=True)
 
-            for param in Enhance.parameters():
+            for param in model.parameters():
                 param.requires_grad = True
             for param in FogPassFilter1.parameters():
                 param.requires_grad = False
             for param in FogPassFilter2.parameters():
                 param.requires_grad = False
+
+            pred_sf5 = interp(feature_sf5)
+            pred_cw5 = interp(feature_cw5)
+            feature_sf5_logsoftmax = log_m(feature_sf5)
+            feature_cw5_softmax = m(feature_cw5)
+
+            loss_seg_sf = ce_loss(pred_sf5, label)
+            loss_seg_cw = ce_loss(pred_cw5, label)
+            loss_con = kl_loss(feature_sf5_logsoftmax, feature_cw5_softmax)
+            loss_fsm = 0
 
             for idx, layer in enumerate(fsm_weights):
                 low_feature = low_features[layer]
@@ -252,13 +300,13 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
                 loss_fsm += layer_fsm_loss / 4.
 
             # -----------------------------------------------
-            loss_s = ce_loss(smap_n, label) + ce_loss(smap,
-                                                      label) + args.lambda_fsm * loss_fsm + args.lambda_con * loss_con
-            loss = loss_s
+            loss = loss_seg_sf + loss_seg_cw + args.lambda_fsm * loss_fsm + args.lambda_con * loss_con
 
-            opt_Enhance.zero_grad()
+            for opt in opts:
+                opt.zero_grad()
             loss.backward()
-            opt_Enhance.step()
+            for opt in opts:
+                opt.step()
             step += 1
 
             # train_loss += loss1.item() + loss.item()
@@ -273,7 +321,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             # tbar.set_description('TrainLoss: {0:.3}, seg_loss: {1:.3}, decom_loss:{2:.3},'
             #                      .format(np.mean(loss_record), loss_s, loss1))
             tbar.set_description('TrainLoss: {0:.3}, seg_loss: {1:.3}'
-                                 .format(np.mean(loss_record), loss_s))
+                                 .format(np.mean(loss_record), loss))
 
             # if i % 600 == 0:
             #     I_pow = torch.pow(I_3, 0.1)
@@ -308,7 +356,7 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
         # writer.add_scalar('loss_epoch_train', float(loss_train_mean), epoch)
 
         if epoch % args.validation_step == 0:
-            acc, macc, miou = val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, epoch)
+            acc, macc, miou = val(args, Decomp, opt_Decomp, model, opts, interp, trainloader, valloader, epoch)
             writer.add_scalar('acc_val', acc, epoch)
             writer.add_scalar('miou_val', miou, epoch)
 
@@ -321,31 +369,37 @@ def train_and_val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, v
             if miou > best_pred:  # miou + acc
                 best_pred = miou
                 # 保存模型
+                # utils.save_checkpoint({
+                #     'epoch': epoch + 1,
+                #     'state_dict_decomp': Decomp.state_dict(),
+                #     'optimizer_decomp': opt_Decomp.state_dict(),
+                #     'state_dict_enhance': Enhance.state_dict(),
+                #     'optimizer_enhance': opt_Enhance.state_dict(),
+                #     'best_pred': miou,
+                # }, is_best=True, filename='epoch{}best{}.pth'.format(epoch, best_pred))
                 utils.save_checkpoint({
                     'epoch': epoch + 1,
-                    'state_dict_decomp': Decomp.state_dict(),
-                    'optimizer_decomp': opt_Decomp.state_dict(),
-                    'state_dict_enhance': Enhance.state_dict(),
-                    'optimizer_enhance': opt_Enhance.state_dict(),
+                    'state_dict_enhance': model.state_dict(),
+                    'fogpass1_state_dict': FogPassFilter1.state_dict(),
+                    'fogpass2_state_dict': FogPassFilter2.state_dict(),
                     'best_pred': miou,
-                }, is_best=True, filename='epoch{}best{}.pth'.format(epoch, best_pred))
+                }, is_best=True, filename='fifo-epoch{}best{}.pth'.format(epoch, best_pred))
             elif epoch > 0 and epoch % 50 == 0:  # 每20轮保存一次
                 utils.save_checkpoint({
                     'epoch': epoch + 1,
-                    'state_dict_decomp': Decomp.state_dict(),
-                    'optimizer_decomp': opt_Decomp.state_dict(),
-                    'state_dict_enhance': Enhance.state_dict(),
-                    'optimizer_enhance': opt_Enhance.state_dict(),
+                    'state_dict_enhance': model.state_dict(),
+                    'fogpass1_state_dict': FogPassFilter1.state_dict(),
+                    'fogpass2_state_dict': FogPassFilter2.state_dict(),
                     'best_pred': miou,
-                }, is_best=False, filename='epoch{0}.pth'.format(epoch))
+                }, is_best=False, filename='fifo-epoch{0}.pth'.format(epoch))
 
 
-def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, epoch=0):
+def val(args, Decomp, opt_Decomp, model, opts, interp, trainloader, valloader, epoch=0):
     print('start val!')
 
     with torch.no_grad():
         Decomp.eval()
-        Enhance.eval()
+        model.eval()
         loss_decomp = LossRetinex()
         lbls = []
         preds = []
@@ -367,7 +421,9 @@ def val(args, Decomp, opt_Decomp, Enhance, opt_Enhance, trainloader, valloader, 
             I_3 = torch.cat((I, I, I), dim=1)
             I2_3 = torch.cat((I2, I2, I2), dim=1)
 
-            smap, _, _ = Enhance(torch.cat((I.detach(), R.detach()), dim=1))
+            _, _, _, _, _, feature5 = model(torch.cat((I.detach(), R.detach()), dim=1))
+            smap = interp(feature5)
+
 
             # recon1 = loss_decomp.recon(R, I, image)
             # smooth_i = illumination_smooth_loss(R, I)
@@ -528,7 +584,7 @@ def evaluation(args, Net, Net2, valloader):
 def main(argv):
     # basic parameters
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_epochs', type=int, default=1000, help='Number of epochs to train for')
+    parser.add_argument('--num_epochs', type=int, default=300, help='Number of epochs to train for')
     parser.add_argument('--checkpoint_step', type=int, default=5, help='How often to save checkpoints (epochs)')
     parser.add_argument('--validation_step', type=int, default=1, help='How often to perform validation (epochs)')
     parser.add_argument('--crop_height', type=int, default=576, help='Height of cropped/resized input image to network')
@@ -578,6 +634,12 @@ def main(argv):
     opt_Net = torch.optim.Adam(Net.parameters(), lr=0.001, betas=(0.95, 0.999))
     opt_Net2 = torch.optim.Adam(Net2.parameters(), lr=0.001, betas=(0.95, 0.999))
 
+
+    model = rf_lw101(num_classes=args.num_classes).cuda()
+    optimisers, schedulers = setup_optimisers_and_schedulers(args, model=model)
+    opts = make_list(optimisers)
+
+
     if args.pretrained_model_path is not None:
         if not os.path.isfile(args.pretrained_model_path):
             raise RuntimeError("=> no pretrained model found at '{}'".format(args.pretrained_model_path))
@@ -614,7 +676,8 @@ def main(argv):
     # == valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=16, drop_last=False)
 
     if args.mode == 'train_and_val':
-        train_and_val(args, Net, opt_Net, Net2, opt_Net2, trainloader, valloader, best_pred=best_pred)
+        # train_and_val(args, Net, opt_Net, Net2, opt_Net2, trainloader, valloader, best_pred=best_pred)
+        train_and_val(args, Net, opt_Net, model, opts, trainloader, valloader, best_pred=best_pred)  # decom-fifo
     elif args.mode == 'output':
         output(args, Net, Net2, valloader)
     elif args.mode == 'evaluation':
