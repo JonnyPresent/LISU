@@ -11,6 +11,7 @@ import csv
 import matplotlib
 from tensorboardX import SummaryWriter
 
+from decom_fifo_train import DecomFifo
 from model.refinenetlw import rf_lw101
 
 matplotlib.use('Agg')
@@ -32,15 +33,18 @@ from pytorch_metric_learning.reducers import MeanReducer
 from torch.autograd import Variable
 from torch.nn import functional as F
 from utils.optimisers import get_optimisers, get_lr_schedulers
+from config.tarin_config import get_arguments
 
 from torchvision import utils as vutils
 
 np.set_printoptions(threshold=sys.maxsize)
 torch.set_printoptions(profile='full')
+from torch.utils.data import DataLoader
+import torch
+import numpy as np
 
 
 # torch.backends.cudnn.benchmark = True
-
 def make_list(x):
     """Returns the given input as a list."""
     if isinstance(x, list):
@@ -49,6 +53,7 @@ def make_list(x):
         return list(x)
     else:
         return [x]
+
 
 def setup_optimisers_and_schedulers(args, model):
     optimisers = get_optimisers(
@@ -118,7 +123,6 @@ def train_and_val(args, Decomp, opt_Decomp, model, opts, trainloader, valloader,
         print('epoch:', epoch, 'best:', best_pred, 'lr_fpf1:', lr_fpf1, 'lr_fpf2:', lr_fpf2)
         loss_record = []
         miou_record = []
-
         # if epoch > 150:
         #     for p in Decomp.parameters():
         #         p.requires_grad = False
@@ -445,9 +449,9 @@ def val(args, Decomp, opt_Decomp, model, opts, interp, trainloader, valloader, e
                 # I_e = I_pow * R_hat
                 I_e = I_pow
                 sout = utils.reverse_one_hot(smap)
+
                 sout = sout[0, :, :]
                 sout = utils.colorize(sout).numpy()
-
                 sout = np.transpose(sout, (2, 0, 1))
 
                 lbl = label[0, :, :]
@@ -601,7 +605,6 @@ def main(argv):
     #  ll
     parser.add_argument('--data_path', type=str, default=r'/mnt/disk2/data/stu010/lj/datasets/LISU/LISU_LLRGBD_real',
                         help='path to your dataset')
-    parser.add_argument('--pretrained_model_path', type=str, default=r'ckpt/save/LISU_LLRGBD_real_best.pth.tar', help='')
     # parser.add_argument('--pretrained_model_path', type=str, default=None, help='saved model')
     parser.add_argument('--mode', type=str, default='train_and_val', help='train_and_val|output|evaluation')
     parser.add_argument('--cuda', type=str, default='1', help='GPU id used for training')
@@ -619,8 +622,6 @@ def main(argv):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
     print(f"CUDA_VISIBLE_DEVICES:{args.cuda}")
 
-    import torch
-    from torch.utils.data import DataLoader
 
     # random seed
     np.random.seed(args.seed)  # cpu vars
@@ -631,58 +632,33 @@ def main(argv):
     Net2 = models.LISU_JOINT().cuda()
 
     # optimizer
-    opt_Net = torch.optim.Adam(Net.parameters(), lr=0.001, betas=(0.95, 0.999))
     opt_Net2 = torch.optim.Adam(Net2.parameters(), lr=0.001, betas=(0.95, 0.999))
-
-
-    model = rf_lw101(num_classes=args.num_classes).cuda()
-    optimisers, schedulers = setup_optimisers_and_schedulers(args, model=model)
-    opts = make_list(optimisers)
-
-
-    if args.pretrained_model_path is not None:
-        if not os.path.isfile(args.pretrained_model_path):
-            raise RuntimeError("=> no pretrained model found at '{}'".format(args.pretrained_model_path))
-
-        # checkpoint = torch.load(args.pretrained_model_path)
-        # Net.load_state_dict(checkpoint['state_dict_decomp'], strict=False)
-        # Net2.load_state_dict(checkpoint['state_dict_enhance'], strict=False)
-        # # args.start_epoch = checkpoint['epoch']
-        # opt_Net.load_state_dict(checkpoint['optimizer_decomp'])
-        # opt_Net2.load_state_dict(checkpoint['optimizer_enhance'])
-        # best_pred = checkpoint['best_pred']
-
-        # 只加载decomp
-        checkpoint = torch.load(args.pretrained_model_path)
-        Net.load_state_dict(checkpoint['state_dict_decomp'])
-        opt_Net.load_state_dict(checkpoint['optimizer_decomp'])
-        best_pred = 0.1
-
-        print('加载decomp')
-    else:
-        # best_pred = 0.0
-        # best_pred = 0.57565
-        print('未加载lisu-pre')
-        best_pred = 0.1
-
-    trainset = LLRGBD_real(args, mode='train')
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
-    valset = LLRGBD_real(args, mode='val')
-    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
 
     # trainset = LLRGBD_synthetic(args, mode='train')
     # valset = LLRGBD_synthetic(args, mode='val')
     # == trainloader = DataLoader(trainset, batch_size=12, shuffle=True, num_workers=16, drop_last=True)
     # == valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=16, drop_last=False)
 
-    if args.mode == 'train_and_val':
-        # train_and_val(args, Net, opt_Net, Net2, opt_Net2, trainloader, valloader, best_pred=best_pred)
-        train_and_val(args, Net, opt_Net, model, opts, trainloader, valloader, best_pred=best_pred)  # decom-fifo
-    elif args.mode == 'output':
-        output(args, Net, Net2, valloader)
-    elif args.mode == 'evaluation':
-        evaluation(args, Net, Net2, valloader)
+    # if args.mode == 'train_and_val':
+    #     # train_and_val(args, Net, opt_Net, Net2, opt_Net2, trainloader, valloader, best_pred=best_pred)
+    #     train_and_val(args, Net, opt_Net, model, opts, trainloader, valloader, best_pred=best_pred)  # decom-fifo
+    # elif args.mode == 'output':
+    #     output(args, Net, Net2, valloader)
+    # elif args.mode == 'evaluation':
+    #     evaluation(args, Net, Net2, valloader)
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    args = get_arguments(sys.argv[1:])
+    os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+    print('cuda_device', os.environ["CUDA_VISIBLE_DEVICES"])
+    print('start_epoch', args.start_epoch)
+
+    trainset = LLRGBD_real(args, mode='train')
+    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
+    valset = LLRGBD_real(args, mode='val')
+    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+
+    dacom_fifo = DecomFifo(args)
+    dacom_fifo.train(trainloader, valloader)
+
