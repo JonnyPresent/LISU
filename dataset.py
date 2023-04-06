@@ -11,6 +11,7 @@ import glob
 from torchvision import transforms
 import numpy as np
 import torch
+import cv2
 
 import os
 
@@ -106,12 +107,24 @@ class LLRGBD_real(Dataset):
         img = img.resize((320, 240), Image.BILINEAR)
         img = np.array(img)
 
+        img_dn = img
+        img_dn = cv2.blur(img_dn, (5, 5))
+        # Image.fromarray(img_dn).save('')
+
+        img_dn = img_dn
+        img_dn = torch.Tensor(img_dn).float().permute(2, 0, 1)
+
         img = Image.fromarray(img).convert('RGB')
         img = self.to_tensor(img)
 
         img2 = Image.open(self.image_list2[item])
         img2 = img2.resize((320, 240), Image.BILINEAR)
         img2 = np.array(img2)
+
+        # img_dn2 = img2
+        # img_dn2 = cv2.blur(img_dn2, (5, 5))
+        # img_dn2 = img_dn2
+        # img_dn2 = torch.Tensor(img_dn2).float().permute(2, 0, 1)
 
         img2 = Image.fromarray(img2).convert('RGB')
         img2 = self.to_tensor(img2)
@@ -125,7 +138,10 @@ class LLRGBD_real(Dataset):
         label = torch.from_numpy(label).long()
 
         # #low-light, high, label
-        return img, img2, label, name
+        # return img, img2, img_dn, label, name
+
+
+        return img, img2, img_dn, label, name
 
     def __len__(self):
         return len(self.image_list)

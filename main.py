@@ -12,7 +12,7 @@ import matplotlib
 from tensorboardX import SummaryWriter
 
 from decom_fifo_train import DecomFifo
-from lisu_fifo_train import LisuFifo
+from lisu_fifo_train import Run
 from model.refinenetlw import rf_lw101
 
 matplotlib.use('Agg')
@@ -662,6 +662,6 @@ if __name__ == '__main__':
 
     # dacom_fifo = DecomFifo(args)
     # dacom_fifo.train(trainloader, valloader)
-    lisu_fifo = LisuFifo(args)
+    lisu_fifo = Run(args)
     lisu_fifo.train(trainloader, valloader)
 
