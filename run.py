@@ -72,19 +72,20 @@ class Run:  #
         writer_name = '{}_{}'.format('LISU', str(time.strftime("%m-%d %H:%M:%S", time.localtime())))
         self.writer = SummaryWriter(os.path.join('runs', writer_name))
 
-        self.model_snr = low_light_transformer().cuda()
-        self.opt_snr = torch.optim.Adam(self.model_snr.parameters(), lr=0.001, betas=(0.95, 0.999))
-        self.cri_pix = CharbonnierLoss().cuda()
-        self.cri_vgg = VGGLoss().cuda()
+        # self.model_snr = low_light_transformer().cuda()
+        # self.opt_snr = torch.optim.Adam(self.model_snr.parameters(), lr=0.001, betas=(0.95, 0.999))
+        # self.cri_pix = CharbonnierLoss().cuda()
+        # self.cri_vgg = VGGLoss().cuda()
 
-        # self.model_resnet = rf_lw101(num_classes=args.num_classes).cuda()
-        # self.optimisers, self.schedulers = setup_optimisers_and_schedulers(args, model=self.model_resnet)
-        # self.opt_resnet = make_list(self.optimisers)
-        # self.log_m = torch.nn.LogSoftmax(dim=1)
-        # self.m = torch.nn.Softmax(dim=1)
-        # self.kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
+        self.model_resnet = rf_lw101(num_classes=args.num_classes).cuda()
+        self.optimisers, self.schedulers = setup_optimisers_and_schedulers(args, model=self.model_resnet)
+        self.opt_resnet = make_list(self.optimisers)
+        self.log_m = torch.nn.LogSoftmax(dim=1)
+        self.m = torch.nn.Softmax(dim=1)
+        self.kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
 
         self.best_score = 0.3
+        # ==============fifo
         # lr_fpf1 = 1e-3
         # lr_fpf2 = 1e-3
         # # if args.modeltrain == 'train':
@@ -103,13 +104,13 @@ class Run:  #
         #     distance=CosineSimilarity(),
         #     reducer=MeanReducer()
         # )
-        self.load_model()
+        # self.load_model()
 
     def load_model(self):
-        checkpoint_snr = torch.load(self.args.pretrained_snr_path)
-        self.model_snr.load_state_dict(checkpoint_snr)
+        checkpoint_snr = torch.load(self.args.pretrained_renet_path)
+        self.model_resnet.load_state_dict(checkpoint_snr)
 
-        print('加载snr')
+        print('加载resnet')
         # self.opt_resnet.load_state_dict(checkpoint_lisu['optimizer_enhance'])
 
         # checkpoint_lisu = torch.load(self.args.pretrained_lisu_path)
@@ -140,42 +141,28 @@ class Run:  #
     def train(self, train_loader, eval_loader):
         for epoch in range(self.args.start_epoch, self.args.num_epochs):
             self.train_epoch(epoch, train_loader)
-            # acc, macc, miou = self.evaluate(eval_loader, epoch)
-            # print('epoch:{}, acc: {}, macc:{}, miou: {}, max_score: {}'.format(epoch, acc, macc, miou, self.best_score))
-            self.save_model(epoch, miou=0)
+            acc, macc, miou = self.evaluate(eval_loader, epoch)
+            print('epoch:{}, acc: {}, macc:{}, miou: {}, max_score: {}'.format(epoch, acc, macc, miou, self.best_score))
+            self.save_model(epoch, miou)
         self.writer.close()
 
     def train_epoch(self, epoch, train_loader):
-        self.model_snr.train()
-        self.cri_pix.train()
-        self.cri_vgg.train()
+        self.model_resnet.train()
 
         tbar = tqdm(train_loader)
-        loss_list = []
-        loss_snr_list = []
+        loss_resnet_list = []
         # loss_decomp, fpf_loss, loss, loss_r, loss_s = 0, 0, 0, 0, 0
 
         for i, (image, image2, img_dn, label, name) in enumerate(tbar):  # l lowlight highlight lable
-            mask = self.gen_mask(image, img_dn).cuda()
-
             image = image.cuda()
-            real_H = image2.cuda()
             label = label.cuda()
             image_size = np.array(image.shape)
 
-            fake_H = self.model_snr(image, mask)
-            loss_snr = self.train_snr(fake_H, real_H)
+            loss = self.train_resnet(image, image_size, label)
 
-            if epoch % 30 == 0 and i == 0:
-                filepath = os.path.join(self.args.visualization_path, f'fake_H{epoch}.png')
-                torchvision.utils.save_image(fake_H, filepath)
-                # self.writer.add_image('fake_h', fake_H, epoch)
-                # save_image = Image.fromarray(fake_H[0].cpu().numpy())
-                # save_image = np.transpose(save_image, (1, 2, 0))
-                # save_image.save(f'{self.args.visualization_path}/fake_H{epoch}.png',)
             with torch.no_grad():
-                loss_snr_list.append(loss_snr)
-
+                # loss_snr_list.append(loss_snr)
+                loss_resnet_list.append(loss)
             # if epoch > 300:
             #     self.train_resnet(fake_H, label, image_size)
             # if epoch > 300:
@@ -204,34 +191,45 @@ class Run:  #
             #     loss, loss_r, loss_s = self.train_seg_freeze_fifo(input_i_r, input_i2_r2, label, R2)
             # self.FogPassFilter1_optimizer.step()
             # self.FogPassFilter2_optimizer.step()
-
         # print('loss_decomp:', loss_decomp, 'fpf_loss:', fpf_loss, 'loss:', loss, 'loss_r:', loss_r, 'loss_s:', loss_s)
-        loss_snr_mean = np.mean(loss_snr_list)
-        print('epoch:', epoch, 'loss_snr:', np.mean(loss_snr_list))
-        self.writer.add_scalar('loss_decomp', loss_snr_mean, epoch)
+        loss_resnet_mean = np.mean(loss_resnet_list)
+        print('loss_resnet_mean:', loss_resnet_mean)
+        self.writer.add_scalar('loss_resnet_mean', loss_resnet_mean, epoch)
         tbar.close()
 
     def evaluate(self, eval_loader, epoch):
-        self.model_snr.eval()
         self.model_resnet.eval()
         lbls = []
         preds = []
 
         tbar = tqdm(eval_loader)
         for i, (image, image2, img_dn, label, name) in enumerate(tbar):
-            mask = self.gen_mask(image, img_dn).cuda()
-
             image = image.cuda()
             label = label.cuda()
             image_size = np.array(image.shape)
 
-            fake_H = self.model_snr(image, mask)
-
-            _, _, _, _, feature5 = self.model_resnet(fake_H)
+            _, _, _, _, _, feature5 = self.model_resnet(image)
             interp = torch.nn.Upsample(size=(image_size[2], image_size[3]), mode='bilinear', align_corners=True)
             smap = interp(feature5)
             smap = F.softmax(smap, 1)
             smap_oh = utils.reverse_one_hot(smap)
+            # 可视化
+            if epoch % 30 == 0 and i == 0:
+                filepath = os.path.join(self.args.visualization_path, f'pre{epoch}.png')
+                sout = smap_oh[0, :, :]
+                sout = utils.colorize(sout).numpy()
+                sout = np.transpose(sout, (2, 0, 1))
+
+                lbl = label[0, :, :]
+                lbl = utils.colorize(lbl).numpy()
+                lbl = np.transpose(lbl, (2, 0, 1))
+
+                cat_image = np.concatenate([lbl, sout], axis=2)
+                cat_image = np.transpose(cat_image, (1, 2, 0))
+                cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
+
+                Image.fromarray(cat_image).save(filepath)
+                # torchvision.utils.save_image(smap_oh, filepath)
             for l, p in zip(label.data.cpu().numpy(), smap_oh.data.cpu().numpy()):
                 lbls.append(l)
                 preds.append(p)
@@ -243,12 +241,10 @@ class Run:  #
 
     def save_model(self, epoch, miou):
         # 保存模型
-        if not os.path.isdir(self.args.save_model_path):
-            os.makedirs(self.args.save_model_path)
-
-        save_state = {'snr': self.model_snr.state_dict(),
-                      'optimizer_snr': self.opt_snr.state_dict(),
-                      # 'enhance': self.model_enhance.state_dict(),
+        save_state = {
+                      # 'snr': self.model_snr.state_dict(),
+                      # 'optimizer_snr': self.opt_snr.state_dict(),
+                      'resnet': self.model_resnet.state_dict(),
                       # 'optimizer_enhance': self.opt_enhance.state_dict(),
                       # 'fogpass1_state_dict': self.FogPassFilter1.state_dict(),
                       # 'fogpass1_opt_state_dict': self.FogPassFilter1_optimizer.state_dict(),
@@ -258,10 +254,10 @@ class Run:  #
         if miou > self.best_score:
             self.best_score = miou
             ckpt_path = os.path.join(self.args.save_model_path,
-                                     'snrdec_maxscore{1:.4f}_epoch{2}_{0}.pth'.format(epoch, self.best_score,
+                                     'resnet_maxscore{1:.4f}_epoch{2}_{0}.pth'.format(epoch, self.best_score,
                                                                                       self.args.num_epochs))
             torch.save(save_state, ckpt_path)
-            print('保存best:')
+            print('保存best')
         elif epoch > 0 and epoch % 50 == 0:
             ckpt_path = os.path.join(self.args.save_model_path,
                                      'epoch{0}.pth'.format(epoch, self.best_score))
@@ -328,7 +324,6 @@ class Run:  #
         return loss_decomp.item()
 
     def train_resnet(self, input, image_size, label):
-        self.model_resnet.train()
         interp = torch.nn.Upsample(size=(image_size[2], image_size[3]), mode='bilinear', align_corners=True)
 
         _, _, _, _, _, feature5 = self.model_resnet(input)
@@ -340,6 +335,8 @@ class Run:  #
         loss.backward()
         for opt in self.opt_resnet:
             opt.step()
+
+        return loss.item()
 
     def train_fifo_freeze_seg(self, input_i_r, input_i2_r2):
         self.model_resnet.eval()
