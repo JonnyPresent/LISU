@@ -12,7 +12,7 @@ import matplotlib
 from tensorboardX import SummaryWriter
 
 from decom_fifo_train import DecomFifo
-from lisu_fifo_train import Run
+from run import Run
 from model.refinenetlw import rf_lw101
 
 matplotlib.use('Agg')
@@ -651,9 +651,12 @@ def main(argv):
 
 if __name__ == '__main__':
     args = get_arguments(sys.argv[1:])
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '1'
     print('cuda_device', os.environ["CUDA_VISIBLE_DEVICES"])
     print('start_epoch', args.start_epoch)
+
+    if not os.path.isdir(args.visualization_path):
+        os.makedirs(args.visualization_path)
 
     trainset = LLRGBD_real(args, mode='train')
     trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
@@ -662,6 +665,6 @@ if __name__ == '__main__':
 
     # dacom_fifo = DecomFifo(args)
     # dacom_fifo.train(trainloader, valloader)
-    lisu_fifo = Run(args)
-    lisu_fifo.train(trainloader, valloader)
+    run = Run(args)
+    run.train(trainloader, valloader)
 

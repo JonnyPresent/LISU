@@ -212,6 +212,11 @@ class ResNetLW(nn.Module):
         l4 = self.do(l4)
         l3 = self.do(l3)
 
+        ########
+
+
+        ########
+
         x4 = self.p_ims1d2_outl1_dimred(l4)
         x4 = self.relu(x4)
         x4 = self.mflow_conv_g1_pool(x4)
