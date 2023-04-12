@@ -65,9 +65,9 @@ def colorize(x):
     # colour_code = np.uint8(colour_code * 255)
     x = colour_code[x.detach().cpu().numpy().astype(int)]  # h,w,3 np
 
-    return torch.from_numpy(x).permute(0, 1, 2)
+    # return torch.from_numpy(x).permute(0, 1, 2)
     # return torch.from_numpy(x)
-    # return x
+    return x
 
 
 def poly_lr_scheduler(optimizer, init_lr, iter, lr_decay_iter=1, max_iter=300, power=0.9):

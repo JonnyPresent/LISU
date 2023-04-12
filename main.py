@@ -651,19 +651,24 @@ def main(argv):
 
 if __name__ == '__main__':
     args = get_arguments(sys.argv[1:])
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '1'
     print('cuda_device', os.environ["CUDA_VISIBLE_DEVICES"])
-    print('start_epoch', args.start_epoch)
+    print('start_epoch:', args.start_epoch, 'total_epoch:', args.num_epochs)
 
     if not os.path.isdir(args.visualization_path):
         os.makedirs(args.visualization_path)
     if not os.path.isdir(args.save_model_path):
         os.makedirs(args.save_model_path)
 
-    trainset = LLRGBD_real(args, mode='train')
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
-    valset = LLRGBD_real(args, mode='val')
-    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+    # trainset = LLRGBD_real(args, mode='train')
+    # trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
+    # valset = LLRGBD_real(args, mode='val')
+    # valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+
+    trainset = LLRGBD_synthetic(args, mode='train')
+    valset = LLRGBD_synthetic(args, mode='val')
+    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=16, drop_last=False)
 
     # dacom_fifo = DecomFifo(args)
     # dacom_fifo.train(trainloader, valloader)

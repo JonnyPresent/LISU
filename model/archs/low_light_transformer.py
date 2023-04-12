@@ -43,9 +43,11 @@ class low_light_transformer(nn.Module):
 
         L1_fea_1 = self.lrelu(self.conv_first_1(x_center))
         L1_fea_2 = self.lrelu(self.conv_first_2(L1_fea_1))
-        L1_fea_3 = self.lrelu(self.conv_first_3(L1_fea_2))
+        L1_fea_3 = self.lrelu(self.conv_first_3(L1_fea_2))  # c 64
+        print('L1_fea_3', L1_fea_3.shape)
 
         fea = self.feature_extraction(L1_fea_3)
+        print('fea', fea.shape)
         fea_light = self.recon_trunk_light(fea)
 
         h_feature = fea.shape[2]
@@ -62,6 +64,7 @@ class low_light_transformer(nn.Module):
         height = fea.shape[2]
         width = fea.shape[3]
         fea_unfold = F.unfold(fea, kernel_size=4, dilation=1, stride=4, padding=0)
+        print('fea_unfold', fea_unfold.shape)
         fea_unfold = fea_unfold.permute(0, 2, 1)
 
         mask_unfold = F.unfold(mask, kernel_size=4, dilation=1, stride=4, padding=0)
@@ -77,12 +80,15 @@ class low_light_transformer(nn.Module):
         channel = fea.shape[1]
         mask = mask.repeat(1, channel, 1, 1)
         fea = fea_unfold * (1 - mask) + fea_light * mask
+        print('fea合并', fea.shape)
 
         out_noise = self.recon_trunk(fea)
         out_noise = torch.cat([out_noise, L1_fea_3], dim=1)
         out_noise = self.lrelu(self.pixel_shuffle(self.upconv1(out_noise)))
+        print('out_noise upconv1', out_noise.shape)
         out_noise = torch.cat([out_noise, L1_fea_2], dim=1)
         out_noise = self.lrelu(self.pixel_shuffle(self.upconv2(out_noise)))
+        print('out_noise upconv2', out_noise.shape)
         out_noise = torch.cat([out_noise, L1_fea_1], dim=1)
         out_noise = self.lrelu(self.HRconv(out_noise))
         out_noise = self.conv_last(out_noise)

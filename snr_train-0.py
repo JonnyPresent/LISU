@@ -16,7 +16,7 @@ def save_model(args):
         ckpt_path = os.path.join(self.args.save_model_path,
                                  'lisu-fifo_maxscore{1:.4f}_epoch{2}_{0}.pth'.format(epoch, max_score,
                                                                                      self.args.num_epochs))
-        save_state = {'model': self.model_resnet.state_dict(),
+        save_state = {'model': self.model_resnet_snr.state_dict(),
                       'optimizer_enhance': self.opt_resnet.state_dict(),
                       'fogpass1_state_dict': self.FogPassFilter1.state_dict(),
                       'fogpass1_opt_state_dict': self.FogPassFilter1_optimizer.state_dict(),
@@ -28,7 +28,7 @@ def save_model(args):
     elif epoch > 0 and epoch % 50 == 0:
         ckpt_path = os.path.join(self.args.save_model_path,
                                  'epoch{0}.pth'.format(epoch, max_score))
-        save_state = {'model': self.model_resnet.state_dict(),
+        save_state = {'model': self.model_resnet_snr.state_dict(),
                       'optimizer_enhance': self.opt_resnet.state_dict(),
                       'fogpass1_state_dict': self.FogPassFilter1.state_dict(),
                       'fogpass1_opt_state_dict': self.FogPassFilter1_optimizer.state_dict(),
