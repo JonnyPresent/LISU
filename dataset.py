@@ -48,9 +48,9 @@ class LLRGBD_synthetic(Dataset):
         self.image_list2 = sorted(glob.glob(rgb_folder2))
         self.label_list = sorted(glob.glob(label_folder))
 
-        self.image_list = self.image_list[:400]
-        self.image_list2 = self.image_list2[:400]
-        self.label_list = self.label_list[:400]
+        # self.image_list = self.image_list[:400]
+        # self.image_list2 = self.image_list2[:400]
+        # self.label_list = self.label_list[:400]
         # self.image_name = [x.split('/')[-1].split('.')[0] for x in self.image_list]
 
     def __getitem__(self, item):

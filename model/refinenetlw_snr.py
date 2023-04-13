@@ -172,10 +172,10 @@ class ResNetLW(nn.Module):
         self.clf_conv = nn.Conv2d(
             256, num_classes, kernel_size=3, stride=1, padding=1, bias=True
         )
-
-        ResidualBlock_noBN_f = functools.partial(arch_util.ResidualBlock_noBN, nf=64)
-        self.transformer = Encoder_patch66(d_model=1024, d_inner=2048, n_layers=6)
-        self.recon_trunk_light = arch_util.make_layer(ResidualBlock_noBN_f, 6)
+        # snr
+        # ResidualBlock_noBN_f = functools.partial(arch_util.ResidualBlock_noBN, nf=64)
+        # self.transformer = Encoder_patch66(d_model=1024, d_inner=2048, n_layers=6)
+        # self.recon_trunk_light = arch_util.make_layer(ResidualBlock_noBN_f, 6)
 
     def _make_crp(self, in_planes, out_planes, stages):
         layers = [CRPBlock(in_planes, out_planes, stages)]
@@ -206,42 +206,42 @@ class ResNetLW(nn.Module):
     def forward(self, x, mask=None):
         x = self.conv1(x)
         # =========
-        fea_light = self.recon_trunk_light(x)
-
-        h_feature = x.shape[2]
-        w_feature = x.shape[3]
-        # mask = F.interpolate(mask, size=[h_feature, w_feature], mode='nearest')
-
-        xs = np.linspace(-1, 1, x.size(3) // 4)
-        ys = np.linspace(-1, 1, x.size(2) // 4)
-        xs = np.meshgrid(xs, ys)
-        xs = np.stack(xs, 2)
-        xs = torch.Tensor(xs).unsqueeze(0).repeat(x.size(0), 1, 1, 1).cuda()
-        xs = xs.view(x.size(0), -1, 2)
-
-        height = x.shape[2]
-        width = x.shape[3]
-        fea_unfold = F.unfold(x, kernel_size=4, dilation=1, stride=4, padding=0)
-        # print('fea_unfold', fea_unfold.shape)
-        fea_unfold = fea_unfold.permute(0, 2, 1)
-
-        if mask is not None:
-            mask = F.interpolate(mask, size=[h_feature, w_feature], mode='nearest')
-            mask_unfold = F.unfold(mask, kernel_size=4, dilation=1, stride=4, padding=0)
-            mask_unfold = mask_unfold.permute(0, 2, 1)
-            mask_unfold = torch.mean(mask_unfold, dim=2).unsqueeze(dim=-2)
-            mask_unfold[mask_unfold <= 0.5] = 0.0
-        else:
-            mask_unfold = None
-        fea_unfold = self.transformer(fea_unfold, xs, src_mask=mask_unfold)
-        fea_unfold = fea_unfold.permute(0, 2, 1)
-        # me # transformer序列 合并成图特征
-        fea_unfold = nn.Fold(output_size=(height, width), kernel_size=(4, 4), stride=4, padding=0, dilation=1)(
-            fea_unfold)
-
-        channel = x.shape[1]
-        mask = mask.repeat(1, channel, 1, 1)
-        x = fea_unfold * (1 - mask) + fea_light * mask
+        # fea_light = self.recon_trunk_light(x)
+        #
+        # h_feature = x.shape[2]
+        # w_feature = x.shape[3]
+        # # mask = F.interpolate(mask, size=[h_feature, w_feature], mode='nearest')
+        #
+        # xs = np.linspace(-1, 1, x.size(3) // 4)
+        # ys = np.linspace(-1, 1, x.size(2) // 4)
+        # xs = np.meshgrid(xs, ys)
+        # xs = np.stack(xs, 2)
+        # xs = torch.Tensor(xs).unsqueeze(0).repeat(x.size(0), 1, 1, 1).cuda()
+        # xs = xs.view(x.size(0), -1, 2)
+        #
+        # height = x.shape[2]
+        # width = x.shape[3]
+        # fea_unfold = F.unfold(x, kernel_size=4, dilation=1, stride=4, padding=0)
+        # # print('fea_unfold', fea_unfold.shape)
+        # fea_unfold = fea_unfold.permute(0, 2, 1)
+        #
+        # if mask is not None:
+        #     mask = F.interpolate(mask, size=[h_feature, w_feature], mode='nearest')
+        #     mask_unfold = F.unfold(mask, kernel_size=4, dilation=1, stride=4, padding=0)
+        #     mask_unfold = mask_unfold.permute(0, 2, 1)
+        #     mask_unfold = torch.mean(mask_unfold, dim=2).unsqueeze(dim=-2)
+        #     mask_unfold[mask_unfold <= 0.5] = 0.0
+        # else:
+        #     mask_unfold = None
+        # fea_unfold = self.transformer(fea_unfold, xs, src_mask=mask_unfold)
+        # fea_unfold = fea_unfold.permute(0, 2, 1)
+        # # me # transformer序列 合并成图特征
+        # fea_unfold = nn.Fold(output_size=(height, width), kernel_size=(4, 4), stride=4, padding=0, dilation=1)(
+        #     fea_unfold)
+        #
+        # channel = x.shape[1]
+        # mask = mask.repeat(1, channel, 1, 1)
+        # x = fea_unfold * (1 - mask) + fea_light * mask
         # ===============
         out1 = x
         # print('out1', out1.shape)

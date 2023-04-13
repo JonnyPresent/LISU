@@ -17,9 +17,9 @@ def get_arguments(argv):
     parser.add_argument('--save_model_path', type=str, default=rf'ckpt/{modelname}', help='path to save trained model')
     parser.add_argument('--visualization_path', type=str, default=rf'cat_image/{modelname}')
 
-    parser.add_argument('--num_epochs', type=int, default=300, help='Number of epochs to train for')
+    parser.add_argument('--num_epochs', type=int, default=50, help='Number of epochs to train for')
     parser.add_argument('--start_epoch', type=int, default=0, help='Start counting epochs from this number')
-    parser.add_argument('--batch_size', type=int, default=4, help='Number of images in each batch')  # fifo 中需=4r
+    parser.add_argument('--batch_size', type=int, default=16, help='Number of images in each batch')  # fifo 中需=4r
 
     parser.add_argument('--num_classes', type=int, default=14, help='num of object classes (with void)')
     parser.add_argument("--lambda-fsm", type=float, default=0.0000001)
