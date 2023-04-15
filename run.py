@@ -85,7 +85,8 @@ class Run:  #
         # self.cri_pix = CharbonnierLoss().cuda()
         # self.cri_vgg = VGGLoss().cuda()
 
-        self.model_resnet_snr = rf_lw101(num_classes=args.num_classes).cuda()
+        # self.model_resnet_snr = rf_lw101(num_classes=args.num_classes).cuda()
+        self.model_resnet_snr = ResNetLW(Bottleneck, [3, 4, 23, 3], num_classes=args.num_classes).cuda()
         self.optimisers, self.schedulers = setup_optimisers_and_schedulers(args, model=self.model_resnet_snr)
         self.opt_resnet = make_list(self.optimisers)
         self.log_m = torch.nn.LogSoftmax(dim=1)
@@ -116,10 +117,13 @@ class Run:  #
 
     def load_model(self):
         checkpoint = torch.load(self.args.pretrained_path)
+        # print(checkpoint)
+
         # print('==resnet-snr-fifo-syn==')
-        print('==resnet-syn==')
-        self.model_resnet_snr.load_state_dict(checkpoint['resnet'], strict=True)
-        print('加载resnet')
+        print(self.modelname)
+        print('==resnet-snr-syn==')
+        self.model_resnet_snr.load_state_dict(checkpoint['resnet-snr-fifo'], strict=True)
+        print('加载resnet-snr')
         # print('加载resnet-snr')
         # self.opt_resnet.load_state_dict(checkpoint_lisu['optimizer_enhance'])
 
@@ -176,8 +180,8 @@ class Run:  #
         loss_resnet_snr_fifo = 0
 
         for i, (image, image2, label, img_dn, img_dn2) in enumerate(tbar):  # l lowlight highlight lable
-            # mask = self.gen_mask(image, img_dn).cuda()
-            # mask2 = self.gen_mask(image2, img_dn2).cuda()
+            mask = self.gen_mask(image, img_dn).cuda()
+            mask2 = self.gen_mask(image2, img_dn2).cuda()
 
             image = image.cuda()
             # image2 = image2.cuda()
@@ -185,7 +189,7 @@ class Run:  #
             image_size = np.array(image.shape)
 
             # fake_H = self.model_snr(image, mask)
-            loss = self.train_resnet(image, image_size, label)
+            loss = self.train_resnet(image, image_size, label, mask)
             # loss_fpf = self.train_fifo_freeze_seg(image, mask, image2, mask2)
 
             # if epoch > self.start_train_seg_epoch:
@@ -346,11 +350,11 @@ class Run:  #
 
         return loss_decomp.item()
 
-    def train_resnet(self, input, image_size, label):
+    def train_resnet(self, input, image_size, label, mask):
         # self.model_resnet_snr.train()
         interp = torch.nn.Upsample(size=(image_size[2], image_size[3]), mode='bilinear', align_corners=True)
 
-        _, _, _, _, _, feature5 = self.model_resnet_snr(input)
+        _, _, _, _, _, feature5 = self.model_resnet_snr(input, mask)
         out = interp(feature5)
         loss = ce_loss(out, label)
 
