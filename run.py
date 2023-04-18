@@ -121,7 +121,7 @@ class Run:  #
 
         print(self.modelname)
         self.model_resnet_snr.load_state_dict(checkpoint['resnet-snr-fifo'], strict=True)
-        print('加载resnet-snr')
+        print('加载resnet')
         # print('加载resnet-snr')
         # self.opt_resnet.load_state_dict(checkpoint_lisu['optimizer_enhance'])
 
@@ -161,7 +161,7 @@ class Run:  #
     def train(self, train_loader, eval_loader):
         miou = 0
         for epoch in range(self.args.start_epoch, self.args.num_epochs):
-            self.train_epoch(epoch, train_loader)
+            # self.train_epoch(epoch, train_loader)
             # if epoch > 200:
             acc, macc, miou = self.evaluate(eval_loader, epoch)
             print('epoch:{}, acc: {}, macc:{}, miou: {}, max_score: {}'.format(epoch, acc, macc, miou, self.best_score))
@@ -213,12 +213,12 @@ class Run:  #
 
     def evaluate(self, eval_loader, epoch):
         self.model_resnet_snr.eval()
-        lbls = []
-        preds = []
 
         tbar = tqdm(eval_loader)
-        for i, (image, image2, label, img_dn, img_dn2) in enumerate(tbar):
-            mask = self.gen_mask(image, img_dn).cuda()
+        for i, (image, image2, label, img_dn, img_dn2, name) in enumerate(tbar):
+            mask = self.gen_mask(image, img_dn, name).cuda()
+            # mask2 = self.gen_mask(image2, img_dn2, name).cuda()
+
             image = image.cuda()
             label = label.cuda()
             image_size = np.array(image.shape)
@@ -229,25 +229,26 @@ class Run:  #
             smap = F.softmax(smap, 1)
             smap_oh = utils.reverse_one_hot(smap)
             # 可视化
-            if epoch % self.ck_num == 0 and i == 1:
-                filepath = os.path.join(self.args.visualization_path, f'pre{epoch}.png')
-                # torchvision.utils.save_image(smap_oh, filepath)
+            # if epoch % self.ck_num == 0 and i == 1:
+            filepath = os.path.join(self.args.visualization_path, 'pred', f'pre{name[0]}.png')
+            # torchvision.utils.save_image(smap_oh, filepath)
 
-                sout = smap_oh[0, :, :]
-                # sout = utils.colorize(sout).numpy()
-                sout = utils.colorize(sout)
-                sout = np.transpose(sout, (2, 0, 1))
+            sout = smap_oh[0, :, :]
+            # sout = utils.colorize(sout).numpy()
+            sout = utils.colorize(sout)
+            sout = np.transpose(sout, (2, 0, 1))
 
-                lbl = label[0, :, :]
-                # lbl = utils.colorize(lbl).numpy()
-                lbl = utils.colorize(lbl)
-                lbl = np.transpose(lbl, (2, 0, 1))
+            # lbl = label[0, :, :]
+            # # lbl = utils.colorize(lbl).numpy()
+            # lbl = utils.colorize(lbl)
+            # lbl = np.transpose(lbl, (2, 0, 1))
 
-                cat_image = np.concatenate([lbl, sout], axis=2)
-                cat_image = np.transpose(cat_image, (1, 2, 0))
-                cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
+            # cat_image = np.concatenate([lbl, sout], axis=2)
+            cat_image = np.concatenate([sout], axis=2)
+            cat_image = np.transpose(cat_image, (1, 2, 0))
+            cat_image = np.clip(cat_image * 255.0, 0, 255.0).astype('uint8')
 
-                Image.fromarray(cat_image).save(filepath)
+            Image.fromarray(cat_image).save(filepath)
 
             for l, p in zip(label.data.cpu().numpy(), smap_oh.data.cpu().numpy()):
                 # lbls.append(l)
@@ -261,8 +262,9 @@ class Run:  #
         acc = self.segAcc.pixelAccuracy()
         macc = self.segAcc.meanPixelAccuracy()
         miou = self.segAcc.meanIntersectionOverUnion()
+        print(acc, macc, miou)
 
-        return acc, macc, miou
+        # return acc, macc, miou
 
     def save_model(self, epoch, miou):
         # 保存模型
@@ -285,18 +287,46 @@ class Run:  #
             torch.save(save_state, ckpt_path)
             print('保存断点')
 
-    def gen_mask(self, image, img_nf):
+    def gen_mask(self, image, img_nf, name):
         # img_nf = image.clone().permute(0, 2, 3, 1).numpy()
         # img_nf = cv2.blur(img_nf, (5, 5))
         # img_nf = torch.Tensor(img_nf).float().permute(2, 0, 1)
 
         dark = image
-        dark = dark[:, 0:1, :, :] * 0.299 + dark[:, 1:2, :, :] * 0.587 + dark[:, 2:3, :, :] * 0.114
+        dark = dark[:, 0:1, :, :] * 0.299 + dark[:, 1:2, :, :] * 0.587 + dark[:, 2:3, :, :] * 0.114  # c=1
         light = img_nf
         light = light[:, 0:1, :, :] * 0.299 + light[:, 1:2, :, :] * 0.587 + light[:, 2:3, :, :] * 0.114  # 灰度化
         noise = torch.abs(dark - light)
         mask = torch.div(light, noise + 0.0001)  # torch.Size([4, 1, 240, 320])
         # print('mask.shape', mask.shape)
+        filepath_dark = os.path.join(self.args.visualization_path, 'mask', f'dark_g{name[0]}.png')
+        filepath_light = os.path.join(self.args.visualization_path, 'mask', f'light_g{name[0]}.png')
+        filepath_noise = os.path.join(self.args.visualization_path, 'mask', f'noise{name[0]}.png')
+        filepath_mask = os.path.join(self.args.visualization_path, 'mask', f'mask{name[0]}.png')
+        # torchvision.utils.save_image(mask, filepath_light)
+        # torchvision.utils.save_image(mask, filepath_noise)
+
+        # dark_g = np.transpose(dark[0].detach().cpu().numpy(), (1, 2, 0))
+        # dark_g = np.clip(dark_g * 255.0, 0, 255.0).astype('uint8')
+        # dark_g = np.squeeze(dark_g, 2)
+        # Image.fromarray(dark_g).save(filepath_dark)
+        #
+        # light_g = np.transpose(light[0].detach().cpu().numpy(), (1, 2, 0))
+        # light_g = np.clip(light_g * 255.0, 0, 255.0).astype('uint8')
+        # light_g = np.squeeze(light_g, 2)
+        # Image.fromarray(light_g).save(filepath_light)
+
+        noise_g = np.transpose(noise[0].detach().cpu().numpy(), (1, 2, 0))
+        noise_g = np.clip(noise_g * 255.0, 0, 255.0).astype('uint8')
+        noise_g = np.squeeze(noise_g, 2)
+        Image.fromarray(noise_g).save(filepath_noise)
+
+        mask_g = np.transpose(mask[0].detach().cpu().numpy(), (1, 2, 0))
+        mask_g = np.clip(mask_g * 255.0, 0, 255.0).astype('uint8')
+        mask_g = np.squeeze(mask_g, 2)
+        Image.fromarray(mask_g).save(filepath_mask)
+
+
 
         batch_size = mask.shape[0]
         height = mask.shape[2]

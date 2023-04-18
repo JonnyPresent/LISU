@@ -119,8 +119,6 @@ class LLRGBD_real(Dataset):
         self.image_list2 = sorted(glob.glob(rgb_folder2))
         self.label_list = sorted(glob.glob(label_folder))
 
-
-
         self.image_name = [x.split('/')[-1].split('.')[0] for x in self.image_list]
 
     def __getitem__(self, item):
@@ -132,7 +130,8 @@ class LLRGBD_real(Dataset):
         img = np.array(img)
 
         img_dn = img
-        img_dn = cv2.blur(img_dn, (5, 5))
+        img_dn = cv2.blur(img_dn, (3, 3))
+        img_dn = img_dn * 1.0 / 255.0
         # Image.fromarray(img_dn).save('')
 
         img_dn = torch.Tensor(img_dn).float().permute(2, 0, 1)
@@ -145,7 +144,8 @@ class LLRGBD_real(Dataset):
         img2 = np.array(img2)
 
         img_dn2 = img2
-        img_dn2 = cv2.blur(img_dn2, (2, 2))
+        img_dn2 = cv2.blur(img_dn2, (5, 5))
+        img_dn2 = img_dn2 * 1.0 / 255.0
         img_dn2 = torch.Tensor(img_dn2).float().permute(2, 0, 1)
 
         img2 = Image.fromarray(img2).convert('RGB')

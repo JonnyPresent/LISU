@@ -662,16 +662,17 @@ if __name__ == '__main__':
 
     # trainset = LLRGBD_real(args, mode='train')
     # trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
-    # valset = LLRGBD_real(args, mode='val')
-    # valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
+    valset = LLRGBD_real(args, mode='val')
+    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=0, drop_last=False)
 
-    trainset = LLRGBD_synthetic(args, mode='train')
-    valset = LLRGBD_synthetic(args, mode='val')
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
-    valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=16, drop_last=False)
+    # trainset = LLRGBD_synthetic(args, mode='train')
+    # valset = LLRGBD_synthetic(args, mode='val')
+    # trainloader = DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    # valloader = DataLoader(valset, batch_size=1, shuffle=False, num_workers=16, drop_last=False)
 
     # dacom_fifo = DecomFifo(args)
     # dacom_fifo.train(trainloader, valloader)
     run = Run(args)
-    run.train(trainloader, valloader)
+    # run.train(trainloader, valloader)
+    run.evaluate(valloader, 0)
 
