@@ -73,7 +73,7 @@ class Run:  #
         self.args = args
         self.modelname = self.args.modelname
         self.ck_num = 5
-        self.start_train_seg_epoch = 50
+        self.start_train_seg_epoch = 20
 
         writer_name = '{}_{}'.format(f'{self.modelname}', str(time.strftime("%m-%d %H:%M:%S", time.localtime())))
         self.writer = SummaryWriter(os.path.join('runs', writer_name))
@@ -96,42 +96,40 @@ class Run:  #
         self.best_score = 0.3
         # ==============fifo
         # lr_fpf1 = 1e-3
-        # lr_fpf2 = 1e-3
-        # # if args.modeltrain == 'train':
-        # #     lr_fpf1 = 5e-4
-        # self.FogPassFilter1 = FogPassFilter_conv1(2080).cuda()
-        # self.FogPassFilter1_optimizer = torch.optim.Adamax(
-        #     [p for p in self.FogPassFilter1.parameters() if p.requires_grad == True],
-        #     lr=lr_fpf1)
-        # self.FogPassFilter2 = FogPassFilter_res1(32896).cuda()
-        # self.FogPassFilter2_optimizer = torch.optim.Adamax(
-        #     [p for p in self.FogPassFilter2.parameters() if p.requires_grad == True],
-        #     lr=lr_fpf2)
-        # self.fogpassfilter_loss = losses.ContrastiveLoss(
-        #     pos_margin=0.1,
-        #     neg_margin=0.1,
-        #     distance=CosineSimilarity(),
-        #     reducer=MeanReducer()
-        # )
+        lr_fpf1 = 5e-4
+        lr_fpf2 = 1e-3
+        # if args.modeltrain == 'train':
+        #     lr_fpf1 = 5e-4
+        self.FogPassFilter1 = FogPassFilter_conv1(2080).cuda()
+        self.FogPassFilter1_optimizer = torch.optim.Adamax(
+            [p for p in self.FogPassFilter1.parameters() if p.requires_grad == True],
+            lr=lr_fpf1)
+        self.FogPassFilter2 = FogPassFilter_res1(32896).cuda()
+        self.FogPassFilter2_optimizer = torch.optim.Adamax(
+            [p for p in self.FogPassFilter2.parameters() if p.requires_grad == True],
+            lr=lr_fpf2)
+        self.fogpassfilter_loss = losses.ContrastiveLoss(
+            pos_margin=0.1,
+            neg_margin=0.1,
+            distance=CosineSimilarity(),
+            reducer=MeanReducer()
+        )
         self.load_model()
 
     def load_model(self):
         checkpoint = torch.load(self.args.pretrained_path)
-        # print(checkpoint)
 
-        # print('==resnet-snr-fifo-syn==')
         print(self.modelname)
-        print('==resnet-snr-syn==')
         self.model_resnet_snr.load_state_dict(checkpoint['resnet-snr-fifo'], strict=True)
         print('加载resnet-snr')
         # print('加载resnet-snr')
         # self.opt_resnet.load_state_dict(checkpoint_lisu['optimizer_enhance'])
 
-        # self.FogPassFilter1.load_state_dict(checkpoint['fogpass1_state_dict'])
-        # self.FogPassFilter2.load_state_dict(checkpoint['fogpass2_state_dict'])
-        # self.FogPassFilter1_optimizer.load_state_dict(checkpoint['fogpass1_opt_state_dict'])
-        # self.FogPassFilter2_optimizer.load_state_dict(checkpoint['fogpass2_opt_state_dict'])
-        # print('加载fifo')
+        self.FogPassFilter1.load_state_dict(checkpoint['fogpass1_state_dict'])
+        self.FogPassFilter2.load_state_dict(checkpoint['fogpass2_state_dict'])
+        self.FogPassFilter1_optimizer.load_state_dict(checkpoint['fogpass1_opt_state_dict'])
+        self.FogPassFilter2_optimizer.load_state_dict(checkpoint['fogpass2_opt_state_dict'])
+        print('加载fifo')
 
         # ======
 
@@ -171,46 +169,46 @@ class Run:  #
         self.writer.close()
 
     def train_epoch(self, epoch, train_loader):
-        self.model_resnet_snr.train()
+        # self.model_resnet_snr.train()
 
         tbar = tqdm(train_loader)
         loss_resnet_list = []
-        # loss_fpf_list = []
+        loss_fpf_list = []
         # loss_decomp, fpf_loss, loss, loss_r, loss_s = 0, 0, 0, 0, 0
-        loss_resnet_snr_fifo = 0
+        loss_resnet = 0
 
         for i, (image, image2, label, img_dn, img_dn2) in enumerate(tbar):  # l lowlight highlight lable
             mask = self.gen_mask(image, img_dn).cuda()
             mask2 = self.gen_mask(image2, img_dn2).cuda()
 
             image = image.cuda()
-            # image2 = image2.cuda()
+            image2 = image2.cuda()
             label = label.cuda()
             image_size = np.array(image.shape)
 
             # fake_H = self.model_snr(image, mask)
-            loss = self.train_resnet(image, image_size, label, mask)
-            # loss_fpf = self.train_fifo_freeze_seg(image, mask, image2, mask2)
+            # loss = self.train_resnet(image, image_size, label, mask)
+            loss_fpf = self.train_fifo_freeze_seg(image, mask, image2, mask2)
 
-            # if epoch > self.start_train_seg_epoch:
-            #     loss_resnet_snr_fifo = self.train_seg_freeze_fifo(image, mask, image2, mask2, label, image_size)
-            # self.FogPassFilter1_optimizer.step()
-            # self.FogPassFilter2_optimizer.step()
+            if epoch > self.start_train_seg_epoch:
+                loss_resnet = self.train_seg_freeze_fifo(image, mask, image2, mask2, label, image_size)
+            self.FogPassFilter1_optimizer.step()
+            self.FogPassFilter2_optimizer.step()
 
             with torch.no_grad():
-                loss_resnet_list.append(loss)
-                # loss_fpf_list.append(loss_fpf)
+                loss_resnet_list.append(loss_resnet)
+                loss_fpf_list.append(loss_fpf)
 
         # print('loss_decomp:', loss_decomp, 'fpf_loss:', fpf_loss, 'loss:', loss, 'loss_r:', loss_r, 'loss_s:', loss_s)
         # print('loss_resnet_list', loss_resnet_list)
         # print('loss_fpf_list', loss_fpf_list)
 
         loss_resnet_mean = np.mean(loss_resnet_list)
-        # loss_fpf_mean = np.mean(loss_fpf_list)
-        # print('loss_resnet-snr-fifo_mean:', loss_resnet_mean, ' loss_fpf_mean:', loss_fpf_mean)
-        print('loss_resnet-snr-fifo_mean:', loss_resnet_mean)
+        loss_fpf_mean = np.mean(loss_fpf_list)
+        print('loss_resnet-snr-fifo_mean:', loss_resnet_mean, ' loss_fpf_mean:', loss_fpf_mean)
 
         self.writer.add_scalar('loss_resnet-snr_mean', loss_resnet_mean, epoch)
+        self.writer.add_scalar('loss_fpf_mean', loss_fpf_mean, epoch)
         tbar.close()
 
     def evaluate(self, eval_loader, epoch):
@@ -269,14 +267,11 @@ class Run:  #
     def save_model(self, epoch, miou):
         # 保存模型
         save_state = {
-                      # 'snr': self.model_snr.state_dict(),
-                      # 'optimizer_snr': self.opt_snr.state_dict(),
                       'resnet-snr-fifo': self.model_resnet_snr.state_dict(),
-                      # 'optimizer_enhance': self.opt_enhance.state_dict(),
-                      # 'fogpass1_state_dict': self.FogPassFilter1.state_dict(),
-                      # 'fogpass1_opt_state_dict': self.FogPassFilter1_optimizer.state_dict(),
-                      # 'fogpass2_state_dict': self.FogPassFilter2.state_dict(),
-                      # 'fogpass2_opt_state_dict': self.FogPassFilter2_optimizer.state_dict(),
+                      'fogpass1_state_dict': self.FogPassFilter1.state_dict(),
+                      'fogpass1_opt_state_dict': self.FogPassFilter1_optimizer.state_dict(),
+                      'fogpass2_state_dict': self.FogPassFilter2.state_dict(),
+                      'fogpass2_opt_state_dict': self.FogPassFilter2_optimizer.state_dict(),
                       'epoch': epoch}
         if miou > self.best_score:
             self.best_score = miou
@@ -421,23 +416,28 @@ class Run:  #
                 fog_factor_low[batch_idx] = fogpassfilter(vector_low_gram[batch_idx])
                 fog_factor_high[batch_idx] = fogpassfilter(vector_high_gram[batch_idx])
 
-
-            fog_factor_embeddings = torch.cat((torch.unsqueeze(fog_factor_low[0], 0), torch.unsqueeze(fog_factor_high[0], 0),
-                                               torch.unsqueeze(fog_factor_low[1], 0),torch.unsqueeze(fog_factor_high[1], 0),
-                                               torch.unsqueeze(fog_factor_low[2], 0),torch.unsqueeze(fog_factor_high[2], 0),
-                                               torch.unsqueeze(fog_factor_low[3], 0),torch.unsqueeze(fog_factor_high[3], 0),
-                                               ), 0)
+            # fog_factor_embeddings = torch.cat((torch.unsqueeze(fog_factor_low[0], 0), torch.unsqueeze(fog_factor_high[0], 0),
+            #                                    torch.unsqueeze(fog_factor_low[1], 0),torch.unsqueeze(fog_factor_high[1], 0),
+            #                                    torch.unsqueeze(fog_factor_low[2], 0),torch.unsqueeze(fog_factor_high[2], 0),
+            #                                    torch.unsqueeze(fog_factor_low[3], 0),torch.unsqueeze(fog_factor_high[3], 0),
+            #                                    ), 0)
             # print(fog_factor_embeddings.shape)
-            # l = []
-            # for i in range(self.args.batch_size):
-            #     l.append(torch.unsqueeze(fog_factor_low[i], 0))
-
+            fog_factor_list = []
+            fog_factor_labels_list = []
+            for i in range(self.args.batch_size):
+                fog_factor_list.append(torch.unsqueeze(fog_factor_low[i], 0))
+                fog_factor_list.append(torch.unsqueeze(fog_factor_high[i], 0))
+                fog_factor_labels_list.append(0)
+                fog_factor_labels_list.append(1)
+            fog_factor_embeddings = torch.cat(fog_factor_list, 0)
 
             fog_factor_embeddings_norm = torch.norm(fog_factor_embeddings, p=2, dim=1).detach()
             size_fog_factor = fog_factor_embeddings.size()
             fog_factor_embeddings = fog_factor_embeddings.div(
-                fog_factor_embeddings_norm.expand(size_fog_factor[1], 8).t())
-            fog_factor_labels = torch.LongTensor([0, 1, 0, 1, 0, 1, 0, 1])
+                # fog_factor_embeddings_norm.expand(size_fog_factor[1], 8).t())
+                fog_factor_embeddings_norm.expand(size_fog_factor[1], self.args.batch_size*2).t())
+            # fog_factor_labels = torch.LongTensor([0, 1, 0, 1, 0, 1, 0, 1])
+            fog_factor_labels = torch.LongTensor(fog_factor_labels_list)
             fog_pass_filter_loss = self.fogpassfilter_loss(fog_factor_embeddings, fog_factor_labels)
 
             total_fpf_loss += fog_pass_filter_loss

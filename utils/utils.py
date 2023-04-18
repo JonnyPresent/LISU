@@ -48,7 +48,7 @@ def reverse_one_hot(image):
 
 def colorize(x):
     colour_code = np.array([[0, 0, 0],
-                       [0, 0, 1],
+                       [0, 0, 1],  # bed
                        [0.9137,0.3490,0.1882], #BOOKS
                        [0, 0.8549, 0], #CEILING
                        [0.5843,0,0.9412], #CHAIR
@@ -60,7 +60,7 @@ def colorize(x):
                        [0.9412,0.1373,0.9216], #TABLE
                        [0,0.6549,0.6118], #TV
                        [0.9765,0.5451,0], #WALL
-                       [0.8824,0.8980,0.7608]])
+                       [0.8824,0.8980,0.7608]])  # window
 
     # colour_code = np.uint8(colour_code * 255)
     x = colour_code[x.detach().cpu().numpy().astype(int)]  # h,w,3 np
